@@ -1,4 +1,8 @@
 #!/bin/bash
+# We created this to tie the monitoring and deployment pieces together. 
+# It checks 
+#     whether the VM and application are healthy 
+#         if the application is unavailable, it can trigger the deployment script to restore the service automatically.
 
 PORT=22001
 MACHINE="paffenroth-23.dyn.wpi.edu"
