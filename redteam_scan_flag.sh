@@ -18,7 +18,7 @@ TIMEZONE="America/New_York"
 NTP_SERVER="time.nist.gov"
 NTP_TOLERANCE_SECONDS=60
 # Node/group to check in -t mode. Change this to a value from 1 through 25.
-TEST_NODE=1
+TEST_NODE=24
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="$SCRIPT_DIR/redteam_scan.log"
@@ -359,9 +359,9 @@ if "$test_mode"; then
     echo "Test mode: SSH key is present and readable at $KEY; checking node $TEST_NODE"
     ports=("$((22000 + TEST_NODE))")
 else
-    # Build nodes 1-25's corresponding SSH ports, then shuffle them in place.
+    # Build nodes 2-25's corresponding SSH ports, then shuffle them in place.
     ports=()
-    for node in {1..25}; do
+    for node in {2..25}; do
         ports+=("$((22000 + node))")
     done
 
