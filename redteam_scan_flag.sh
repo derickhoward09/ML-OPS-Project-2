@@ -322,7 +322,9 @@ if ! "$test_mode"; then
     now="$(TZ="$TIMEZONE" date '+%Y%m%d%H%M%S')"
     if [[ "$now" < "$window_start" ]]; then
         echo "ERROR: full scans are allowed only from September 29, 2026 noon through October 1, 2026 noon (America/New_York)." >&2
-        exit 1
+        # This is an expected cron skip, not a failed scan. Return success so
+        # Healthchecks does not alert for runs before the permitted window.
+        exit 0
     fi
     if [[ "$now" > "$window_end" || "$now" == "$window_end" ]]; then
         # The noon deadline push runs outside the scan window and uses the
