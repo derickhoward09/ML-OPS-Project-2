@@ -23,7 +23,7 @@ TEST_NODE=1
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="$SCRIPT_DIR/redteam_scan.log"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/redteam-scan"
-WEBHOOK_FILE="$CONFIG_DIR/discord_webhook"
+ENV_FILE="$SCRIPT_DIR/.env"
 NOTIFICATION_STATE_FILE="$CONFIG_DIR/sent_notifications"
 LAST_SCAN_FILE="$CONFIG_DIR/last_scan"
 
@@ -82,7 +82,7 @@ valid_webhook_url() {
 }
 
 initialize_discord() {
-    local webhook=""
+    local webhook="" temp_file=""
     if [[ ! -t 0 ]]; then
         echo "ERROR: --init-discord needs an interactive terminal." >&2
         return 1
@@ -102,19 +102,48 @@ initialize_discord() {
         return 1
     fi
 
-    ensure_config_dir
-    (umask 077; printf '%s\n' "$webhook" > "$WEBHOOK_FILE")
-    chmod 600 "$WEBHOOK_FILE"
+    if [[ -L "$ENV_FILE" || ( -e "$ENV_FILE" && ! -f "$ENV_FILE" ) ]]; then
+        unset webhook
+        echo "ERROR: $ENV_FILE must be a regular file, not a symlink." >&2
+        return 1
+    fi
+
+    if ! temp_file="$(umask 077; mktemp "$SCRIPT_DIR/.env.XXXXXX")"; then
+        unset webhook
+        echo "ERROR: could not create a private .env file beside the script." >&2
+        return 1
+    fi
+
+    if [[ -e "$ENV_FILE" ]] && ! awk 'index($0, "DISCORD_WEBHOOK_URL=") != 1' "$ENV_FILE" > "$temp_file"; then
+        rm -f "$temp_file"
+        unset webhook
+        echo "ERROR: could not preserve the existing .env contents." >&2
+        return 1
+    fi
+    if ! printf 'DISCORD_WEBHOOK_URL=%s\n' "$webhook" >> "$temp_file" || ! chmod 600 "$temp_file" || ! mv -f "$temp_file" "$ENV_FILE"; then
+        rm -f "$temp_file"
+        unset webhook
+        echo "ERROR: could not save the Discord webhook to $ENV_FILE." >&2
+        return 1
+    fi
+
     unset webhook
-    echo "Discord webhook saved to $WEBHOOK_FILE with private permissions."
+    echo "Discord webhook saved to $ENV_FILE with mode 600."
 }
 
 load_discord_webhook() {
-    local candidate=""
-    if [[ ! -r "$WEBHOOK_FILE" ]]; then
+    local candidate="" line=""
+    if [[ -L "$ENV_FILE" || ! -f "$ENV_FILE" || ! -r "$ENV_FILE" ]]; then
         return 1
     fi
-    IFS= read -r candidate < "$WEBHOOK_FILE" || [[ -n "$candidate" ]] || return 1
+    if ! chmod 600 "$ENV_FILE"; then
+        return 1
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" == DISCORD_WEBHOOK_URL=* ]]; then
+            candidate="${line#DISCORD_WEBHOOK_URL=}"
+        fi
+    done < "$ENV_FILE"
     if ! valid_webhook_url "$candidate"; then
         unset candidate
         return 1
