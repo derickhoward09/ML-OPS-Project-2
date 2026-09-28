@@ -1,4 +1,6 @@
 #!/bin/bash
+# This script automates the process of generating or using the personal SSH key and installing its public key into the VM’s authorized_keys file. 
+# The purpose is to lock down access so the VM is no longer using the shared default credential.
 
 set -e
 
