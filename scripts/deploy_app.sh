@@ -1,4 +1,11 @@
 #!/bin/bash
+# We created this script to automate application deployment. 
+# Its job is to:
+#    install the required system package 
+#    obtain or update the project code
+#    create the Python virtual environment
+#    install dependencies 
+#    start ResumeLens without manually repeating those steps each time.
 
 set -e
 
