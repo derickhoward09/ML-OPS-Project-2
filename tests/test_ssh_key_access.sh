@@ -64,27 +64,27 @@ export FAKE_REMOTE_AUTH="$FIXTURE_DIR/remote_authorized_keys"
 export FAKE_CALLS="$FIXTURE_DIR/calls"
 export FAKE_WRITES="$FIXTURE_DIR/writes"
 
-"$REPO_ROOT/ssh_key_access.sh" >/dev/null
+"$REPO_ROOT/scripts/ssh_key_access.sh" >/dev/null
 cmp -s "$FAKE_REMOTE_AUTH" "$HOME/.ssh/mlops/id_ed25519_group_key.pub"
 [[ "$(wc -l < "$FAKE_WRITES")" -eq 2 ]]
 [[ "$(head -n 1 "$FAKE_WRITES")" == append ]]
 [[ "$(tail -n 1 "$FAKE_WRITES")" == replace ]]
 bootstrap_calls_before="$(grep -c '/student-admin_key$' "$FAKE_CALLS")"
 
-"$REPO_ROOT/ssh_key_access.sh" >/dev/null
+"$REPO_ROOT/scripts/ssh_key_access.sh" >/dev/null
 [[ "$(wc -l < "$FAKE_WRITES")" -eq 2 ]]
 bootstrap_calls_after="$(grep -c '/student-admin_key$' "$FAKE_CALLS")"
 [[ "$bootstrap_calls_before" == "$bootstrap_calls_after" ]]
 
 printf 'unexpected-extra-key\n' >> "$FAKE_REMOTE_AUTH"
-"$REPO_ROOT/ssh_key_access.sh" >/dev/null
+"$REPO_ROOT/scripts/ssh_key_access.sh" >/dev/null
 cmp -s "$FAKE_REMOTE_AUTH" "$HOME/.ssh/mlops/id_ed25519_group_key.pub"
 [[ "$(wc -l < "$FAKE_WRITES")" -eq 3 ]]
 [[ "$(grep -c '/student-admin_key$' "$FAKE_CALLS")" == "$bootstrap_calls_before" ]]
 
 printf 'bootstrap-key\n' > "$FAKE_REMOTE_AUTH"
 export FAKE_REJECT_GROUP=1
-if "$REPO_ROOT/ssh_key_access.sh" >/dev/null; then
+if "$REPO_ROOT/scripts/ssh_key_access.sh" >/dev/null; then
     echo 'Expected group-key verification to fail.' >&2
     exit 1
 fi

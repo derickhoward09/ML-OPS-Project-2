@@ -44,7 +44,7 @@ if ! probe_management_port; then
     exit 1
 fi
 
-if ! "$REPO_ROOT/ssh_key_access.sh"; then
+if ! "$REPO_ROOT/scripts/ssh_key_access.sh"; then
     log "Key recovery failed on port $PORT; the next minute's cron run will retry."
     exit 1
 fi

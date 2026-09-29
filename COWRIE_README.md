@@ -18,7 +18,7 @@ The previous VM helper scripts remain under [`old_scripts/`](old_scripts/) and a
 
 ## Scheduler configuration
 
-1. Put the group private/public key at `~/.ssh/mlops/id_ed25519_group_key{,.pub}` on the scheduler. Keep `student-admin_key` there only for [`ssh_key_access.sh`](ssh_key_access.sh) to restore the authorized group public key after a rebuild. All deployment and monitoring SSH calls use the group private key on public `23001`.
+1. Put the group private/public key at `~/.ssh/mlops/id_ed25519_group_key{,.pub}` on the scheduler. Keep `student-admin_key` there only for [`ssh_key_access.sh`](scripts/ssh_key_access.sh) to restore the authorized group public key after a rebuild. Healthy deployment and monitoring use the group private key on public `23001`; recovery can use the student key when group-key authentication is rejected.
 2. Make sure the scheduler user has `bash`, OpenSSH, `curl`, Python 3, GNU `timeout`, and `flock`. Ubuntu 22.04 provides these through its usual packages; install missing packages as an administrator if needed. The target needs Python 3, `venv`, and passwordless `sudo -n` for `student-admin`.
 3. Keep the repo-root `.env` private (mode `600`). The red-team script can create the Discord line with `./redteam_scan_flag.sh --init-discord`. Cowrie uses `HEALTHCHECKS_PING_URL`; redteam has a separate Healthchecks check and stores its URL as `REDTEAM_HEALTHCHECKS_PING_URL` when its cron is initialized.
 

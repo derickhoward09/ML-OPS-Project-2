@@ -14,7 +14,8 @@ GROUP_KEY="$KEY_DIR/id_ed25519_group_key"
 GROUP_PUBLIC_KEY="$KEY_DIR/id_ed25519_group_key.pub"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-LOG_DIR="$SCRIPT_DIR/logs"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+LOG_DIR="$REPO_ROOT/logs"
 LOG_FILE="$LOG_DIR/ssh_key_access.log"
 
 usage() {
