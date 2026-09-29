@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # CS553 case study 2 — read-only SSH access check.
-# By default, tries the configured key against ports 22002-22025 on the class
-# VM. Pass -test (or --test/-t) to check the configured key and try TEST_NODE.
-# Test node 24 uses its separate management mapping on public port 23001.
+# By default, tries the student-admin key against ports 22002-22025 on the class
+# VM. Pass -test (or --test/-t) to try TEST_NODE. Node 24 is checked on public
+# port 23001 with both the student-admin and group keys.
 # Full scans are allowed only from September 29, 2026 noon through October 1,
 # 2026 noon, America/New_York time. Test mode may be used at any time.
 # Class scan ports use 22000 + the node number. The script issues only a
@@ -19,7 +19,7 @@ GROUP_KEY="$HOME/.ssh/mlops/id_ed25519_group_key"
 TIMEZONE="America/New_York"
 NTP_SERVER="time.nist.gov"
 NTP_TOLERANCE_SECONDS=60
-# Node/group to check in -t mode. Node 24 uses the group key and port 23001.
+# Node/group to check in -t mode. Node 24 uses port 23001 and both keys.
 TEST_NODE=24
 TEST_PORT=23001
 
@@ -43,7 +43,7 @@ for arg in "$@"; do
         -h|--help)
             echo "Usage: $0 [--init-discord | -test|--test|-t]"
             echo "  --init-discord  Securely save a Discord webhook for notifications."
-            echo "  -test            Try TEST_NODE and send a Discord test (node 24 uses port 23001)."
+            echo "  -test            Try TEST_NODE and send a Discord test (node 24 uses both keys on port 23001)."
             echo "  Full scans check nodes 2-25. Scheduled Discord pushes use America/New_York:"
             echo "    Sep 29, 2026 at 1 PM and 7 PM; Sep 30 at 10 AM;"
             echo "    Oct 1 at 11 AM and noon, with the latest completed scan results."
@@ -73,8 +73,9 @@ if "$test_mode"; then
         exit 2
     fi
     TEST_NODE="$TEST_NODE_NUMBER"
+    TEST_KEYS=("$KEY")
     if (( TEST_NODE == 24 )); then
-        KEY="$GROUP_KEY"
+        TEST_KEYS+=("$GROUP_KEY")
     fi
 fi
 
@@ -340,35 +341,43 @@ if ! "$test_mode"; then
     fi
 fi
 
-if [ ! -r "$KEY" ]; then
-    if "$test_mode"; then
-        if ! send_discord_message "Redteam test notification: node $TEST_NODE SSH test could not run because the configured key is unreadable."; then
-            echo "ERROR: Discord test notification could not be sent." >&2
-            exit 1
-        fi
-    else
-        send_scheduled_notifications
-    fi
-    echo "ERROR: cannot read SSH key: $KEY" >&2
-    exit 1
-fi
-
 if "$test_mode"; then
-    if [ ! -f "$KEY" ] || [ ! -s "$KEY" ]; then
-        if ! send_discord_message "Redteam test notification: node $TEST_NODE SSH test could not run because the configured key is missing or empty."; then
+    available_test_keys=()
+    test_key_results=()
+    for key_path in "${TEST_KEYS[@]}"; do
+        if [[ "$key_path" == "$GROUP_KEY" ]]; then
+            key_label="group key"
+        else
+            key_label="student-admin key"
+        fi
+        if [[ -f "$key_path" && -s "$key_path" && -r "$key_path" ]]; then
+            available_test_keys+=("$key_path")
+        else
+            echo "Test key unavailable: $key_label ($key_path)"
+            test_key_results+=("$key_label=unavailable")
+        fi
+    done
+    if (( ${#available_test_keys[@]} == 0 )); then
+        if ! send_discord_message "Redteam test notification: node $TEST_NODE SSH test could not run because no configured test key is available."; then
             echo "ERROR: Discord test notification could not be sent." >&2
             exit 1
         fi
-        echo "ERROR: expected a non-empty key file at: $KEY" >&2
+        echo "ERROR: no configured test key is available." >&2
         exit 1
     fi
-    echo "Test mode: SSH key is present and readable at $KEY; checking node $TEST_NODE"
+    echo "Test mode: checking node $TEST_NODE with ${#available_test_keys[@]} available key(s)."
     if (( TEST_NODE == 24 )); then
         ports=("$TEST_PORT")
     else
         ports=("$((22000 + TEST_NODE))")
     fi
 else
+    if [[ ! -r "$KEY" ]]; then
+        send_scheduled_notifications
+        echo "ERROR: cannot read SSH key: $KEY" >&2
+        exit 1
+    fi
+
     # Build nodes 2-25's corresponding SSH ports, then shuffle them in place.
     ports=()
     for node in {2..25}; do
@@ -385,7 +394,6 @@ fi
 
 ssh_opts=(
     -T
-    -i "$KEY"
     -o IdentitiesOnly=yes
     -o BatchMode=yes
     -o ConnectTimeout=5
@@ -404,13 +412,33 @@ for ((index = 0; index < ${#ports[@]}; index++)); do
         node=$((port - 22000))
     fi
 
-    printf 'Trying node %s on port %s... ' "$node" "$port"
-    if ssh "${ssh_opts[@]}" -p "$port" "${SSH_USER}@${HOST}" true >/dev/null 2>&1; then
-        echo "login succeeded."
-        success_nodes+=("node $node (port $port)")
-        success_node_ids+=("$node")
+    if "$test_mode"; then
+        for scan_key in "${available_test_keys[@]}"; do
+            if [[ "$scan_key" == "$GROUP_KEY" ]]; then
+                key_label="group key"
+            else
+                key_label="student-admin key"
+            fi
+            printf 'Trying node %s on port %s with %s... ' "$node" "$port" "$key_label"
+            if ssh "${ssh_opts[@]}" -i "$scan_key" -p "$port" "${SSH_USER}@${HOST}" true >/dev/null 2>&1; then
+                echo "login succeeded."
+                success_nodes+=("node $node (port $port, $key_label)")
+                success_node_ids+=("$node")
+                test_key_results+=("$key_label=succeeded")
+            else
+                echo "login failed."
+                test_key_results+=("$key_label=failed")
+            fi
+        done
     else
-        echo "login failed."
+        printf 'Trying node %s on port %s... ' "$node" "$port"
+        if ssh "${ssh_opts[@]}" -i "$KEY" -p "$port" "${SSH_USER}@${HOST}" true >/dev/null 2>&1; then
+            echo "login succeeded."
+            success_nodes+=("node $node (port $port)")
+            success_node_ids+=("$node")
+        else
+            echo "login failed."
+        fi
     fi
 
     if ((index < ${#ports[@]} - 1)); then
@@ -451,7 +479,8 @@ if "$test_mode"; then
     else
         test_result="succeeded"
     fi
-    if ! send_discord_message "Redteam test notification: node $TEST_NODE SSH login test $test_result."; then
+    test_key_summary="${test_key_results[*]}"
+    if ! send_discord_message "Redteam test notification: node $TEST_NODE SSH login test $test_result. Key results: $test_key_summary."; then
         echo "ERROR: Discord test notification could not be sent." >&2
         exit 1
     fi
