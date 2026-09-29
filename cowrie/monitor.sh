@@ -43,7 +43,7 @@ if ! flock -n 9; then
 fi
 
 log() {
-    printf '%s | %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" | tee -a "$LOG_FILE"
+    printf '%s | %s\n' "$(TZ="$TIMEZONE" date '+%Y-%m-%d %H:%M:%S %Z')" "$*" | tee -a "$LOG_FILE"
 }
 
 # Spread the once-a-minute SSH check over a 20-second window. The heartbeat
