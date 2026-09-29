@@ -2,9 +2,9 @@
 
 set -Eeuo pipefail
 
-# Node 24 maps to SSH port 22024 (22000 + node number).
+# The gateway maps public port 23001 to node 24's SSH port 22.
 NODE=24
-PORT=$((22000 + NODE))
+PORT=23001
 HOST="paffenroth-23.dyn.wpi.edu"
 REMOTE_USER="student-admin"
 
@@ -153,6 +153,11 @@ if ! GROUP_PUBLIC_PART="$(awk 'NF >= 2 { print $1 " " $2; exit }' "$GROUP_PUBLIC
     log "Run failed: could not read a public key from $GROUP_PUBLIC_KEY."
     exit 1
 fi
+if ! GROUP_PUBLIC_LINE="$(cat "$GROUP_PUBLIC_KEY")" ||
+   [[ "$GROUP_PUBLIC_LINE" == *$'\n'* ]]; then
+    log "Run failed: $GROUP_PUBLIC_KEY must contain exactly one public key."
+    exit 1
+fi
 if ! GROUP_PRIVATE_PART="$(ssh-keygen -y -P '' -f "$GROUP_KEY" 2>/dev/null | awk 'NF >= 2 { print $1 " " $2; exit }')" ||
    [[ -z "$GROUP_PRIVATE_PART" || "$GROUP_PUBLIC_PART" != "$GROUP_PRIVATE_PART" ]]; then
     log "Run failed: group public and private keys do not match or the private key cannot be read without a passphrase."
@@ -165,15 +170,24 @@ if "$GROUP_KEY_OK"; then
         log "Run succeeded: authorized_keys already matches the group public key."
         exit 0
     fi
-    UPDATE_KEY="$GROUP_KEY"
-    UPDATE_KEY_LABEL="group key"
 else
-    UPDATE_KEY="$STUDENT_ADMIN_KEY"
-    UPDATE_KEY_LABEL="student-admin bootstrap key"
+    # Keep the bootstrap key until the group key has authenticated. Replacing
+    # authorized_keys first could lock us out if the new key is rejected.
+    log "Adding group public key using the student-admin bootstrap key."
+    if ! run_ssh -i "$STUDENT_ADMIN_KEY" "$REMOTE_USER@$HOST" \
+        'set -eu; umask 077; mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"; auth="$HOME/.ssh/authorized_keys"; incoming=$(cat); if [ -f "$auth" ] && grep -Fqx -- "$incoming" "$auth"; then chmod 600 "$auth"; exit 0; fi; tmp=$(mktemp "$auth.XXXXXX"); trap "rm -f \"$tmp\"" EXIT; if [ -f "$auth" ]; then cat "$auth" > "$tmp"; fi; printf "\n%s\n" "$incoming" >> "$tmp"; chmod 600 "$tmp"; mv -f "$tmp" "$auth"; trap - EXIT' \
+        < "$GROUP_PUBLIC_KEY" 2>> "$LOG_FILE"; then
+        log "Run failed: could not add the group public key; bootstrap access was not removed."
+        exit 1
+    fi
+    if ! try_login "group key after bootstrap addition" "$GROUP_KEY"; then
+        log "Run failed: group key did not authenticate; bootstrap access was preserved."
+        exit 1
+    fi
 fi
 
-log "Replacing remote authorized_keys using the $UPDATE_KEY_LABEL."
-if ! run_ssh -i "$UPDATE_KEY" "$REMOTE_USER@$HOST" \
+log "Replacing remote authorized_keys using the verified group key."
+if ! run_ssh -i "$GROUP_KEY" "$REMOTE_USER@$HOST" \
     'set -eu; umask 077; mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"; tmp=$(mktemp "$HOME/.ssh/authorized_keys.XXXXXX"); trap "rm -f \"$tmp\"" EXIT; cat > "$tmp"; chmod 600 "$tmp"; mv -f "$tmp" "$HOME/.ssh/authorized_keys"; trap - EXIT' \
     < "$GROUP_PUBLIC_KEY" 2>> "$LOG_FILE"; then
     log "Run failed: could not replace remote authorized_keys."

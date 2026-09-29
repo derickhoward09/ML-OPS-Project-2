@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
 # CS553 case study 2 — read-only SSH access check.
-# By default, tries the configured key against ports 22001-22025 on the class
+# By default, tries the configured key against ports 22002-22025 on the class
 # VM. Pass -test (or --test/-t) to check the configured key and try TEST_NODE.
+# Test node 24 uses its separate management mapping on public port 23001.
 # Full scans are allowed only from September 29, 2026 noon through October 1,
 # 2026 noon, America/New_York time. Test mode may be used at any time.
-# Each node number maps to port 22000 + its number. The script issues only a
+# Class scan ports use 22000 + the node number. The script issues only a
 # remote `true` command; it does not install files or change remote settings.
 # Results are appended to redteam_scan.log beside this script.
 
@@ -14,11 +15,13 @@ set -euo pipefail
 HOST="paffenroth-23.dyn.wpi.edu"
 SSH_USER="student-admin"
 KEY="$HOME/.ssh/mlops/student-admin_key"
+GROUP_KEY="$HOME/.ssh/mlops/id_ed25519_group_key"
 TIMEZONE="America/New_York"
 NTP_SERVER="time.nist.gov"
 NTP_TOLERANCE_SECONDS=60
-# Node/group to check in -t mode. Change this to a value from 1 through 25.
+# Node/group to check in -t mode. Node 24 uses the group key and port 23001.
 TEST_NODE=24
+TEST_PORT=23001
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="$SCRIPT_DIR/redteam_scan.log"
@@ -40,8 +43,8 @@ for arg in "$@"; do
         -h|--help)
             echo "Usage: $0 [--init-discord | -test|--test|-t]"
             echo "  --init-discord  Securely save a Discord webhook for notifications."
-            echo "  -test            Check the configured key, try TEST_NODE, and send a Discord test."
-            echo "  Full scans check nodes 1-25. Scheduled Discord pushes use America/New_York:"
+            echo "  -test            Try TEST_NODE and send a Discord test (node 24 uses port 23001)."
+            echo "  Full scans check nodes 2-25. Scheduled Discord pushes use America/New_York:"
             echo "    Sep 29, 2026 at 1 PM and 7 PM; Sep 30 at 10 AM;"
             echo "    Oct 1 at 11 AM and noon, with the latest completed scan results."
             exit 0
@@ -70,6 +73,9 @@ if "$test_mode"; then
         exit 2
     fi
     TEST_NODE="$TEST_NODE_NUMBER"
+    if (( TEST_NODE == 24 )); then
+        KEY="$GROUP_KEY"
+    fi
 fi
 
 ensure_config_dir() {
@@ -357,7 +363,11 @@ if "$test_mode"; then
         exit 1
     fi
     echo "Test mode: SSH key is present and readable at $KEY; checking node $TEST_NODE"
-    ports=("$((22000 + TEST_NODE))")
+    if (( TEST_NODE == 24 )); then
+        ports=("$TEST_PORT")
+    else
+        ports=("$((22000 + TEST_NODE))")
+    fi
 else
     # Build nodes 2-25's corresponding SSH ports, then shuffle them in place.
     ports=()
@@ -388,7 +398,11 @@ success_nodes=()
 success_node_ids=()
 for ((index = 0; index < ${#ports[@]}; index++)); do
     port="${ports[$index]}"
-    node=$((port - 22000))
+    if "$test_mode"; then
+        node="$TEST_NODE"
+    else
+        node=$((port - 22000))
+    fi
 
     printf 'Trying node %s on port %s... ' "$node" "$port"
     if ssh "${ssh_opts[@]}" -p "$port" "${SSH_USER}@${HOST}" true >/dev/null 2>&1; then

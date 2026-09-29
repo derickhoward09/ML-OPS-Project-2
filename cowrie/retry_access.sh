@@ -6,7 +6,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 HOST=paffenroth-23.dyn.wpi.edu
-PORT=22024
+PORT=23001
 RETRY_INTERVAL=3
 RETRY_WINDOW=55
 REPAIR_INTERVAL=15

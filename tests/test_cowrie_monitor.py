@@ -115,7 +115,7 @@ class CowrieMonitorTests(unittest.TestCase):
         self.assertEqual((self.state_dir / "status").read_text(), "0 healthy 0\n")
         args = self.ssh_args.read_text()
         self.assertIn("id_ed25519_group_key", args)
-        self.assertIn("-p 22024", args)
+        self.assertIn("-p 23001", args)
         self.assertIn("-F /dev/null", args)
         self.assertIn("BatchMode=yes", args)
         self.assertIn("CertificateFile=none", args)

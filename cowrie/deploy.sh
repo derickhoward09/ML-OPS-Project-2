@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROXY_SOURCE="$SCRIPT_DIR/delay_proxy.py"
 GROUP_KEY="$HOME/.ssh/mlops/id_ed25519_group_key"
 TARGET="student-admin@paffenroth-23.dyn.wpi.edu"
-SSH_PORT=22024
+SSH_PORT=23001
 
 usage() {
     cat <<'EOF'
@@ -117,7 +117,9 @@ Type=simple
 User=cowrie
 Group=cowrie
 WorkingDirectory=/opt/cowrie/honeypot
-ExecStart=/opt/cowrie/honeypot/cowrie-env/bin/cowrie start -n
+Environment=COWRIE_STDOUT=yes
+Environment=PATH=/opt/cowrie/honeypot/cowrie-env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/opt/cowrie/honeypot/cowrie-env/bin/cowrie start
 Restart=always
 RestartSec=5
 TimeoutStopSec=20

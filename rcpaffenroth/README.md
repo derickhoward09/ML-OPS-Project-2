@@ -57,4 +57,4 @@ Run:
 
 Application output is stored in `~/log.txt` on the container.
 
-The Gradio application runs on port `7860` inside the container. Access it through the respective http port or an SSH tunnel.
+The Gradio application runs on port `7860` inside the container. On node 24, the gateway maps that port to public port `8001` (`http://paffenroth-23.dyn.wpi.edu:8001/`). The mapping serves HTTP only while the application is running.
