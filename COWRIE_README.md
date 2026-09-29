@@ -12,7 +12,7 @@ This setup runs a deny-all Cowrie decoy on node 24 and restores it after the tar
 
 The gateway mappings are node port `22` to public `23001`, node port `22001` to public `22001`, and node port `7860` to public `8001`. The `22001` rule must actually forward to **node 24's port 22001**. Do not move the management SSH service to the decoy port. The front end accepts TCP, waits 14 minutes 45 seconds before sending an SSH banner, briefly relays to Cowrie, and closes the connection at 15 minutes. It limits concurrent clients and logs arrivals. Cowrie 3.0.15 runs as the dedicated `cowrie` user under systemd with public-key, password, no-auth, and keyboard-interactive logins denied; `hostname` must never succeed.
 
-The legacy [`red_team_v1.sh`](rcpaffenroth/red_team_v1.sh) scans `22001` through `22025` **in order**. A held attempt on `22001` prevents that script from reaching later ports until it exits. The separate [`redteam_scan_flag.sh`](redteam_scan_flag.sh) has different behavior: it checks ports `22002` through `22025` in shuffled order.
+The legacy [`red_team_v1.sh`](rcpaffenroth/red_team_v1.sh) scans `22001` through `22025` **in order**. A held attempt on `22001` prevents that script from reaching later ports until it exits. The separate [`redteam_scan_flag.sh`](redteam_scan_flag.sh) checks ports `22002` through `22025` in shuffled order and can be installed to run every 45 minutes during its permitted scan window.
 
 The previous VM helper scripts remain under [`old_scripts/`](old_scripts/) and are not part of this Cowrie scheduler. Several still use port `22001` for SSH and would now connect to the decoy, so do not use them for VM access. The active scan's NTP helper is [`ntp_clock_check.py`](ntp_clock_check.py) beside `redteam_scan_flag.sh`.
 
@@ -20,17 +20,24 @@ The previous VM helper scripts remain under [`old_scripts/`](old_scripts/) and a
 
 1. Put the group private/public key at `~/.ssh/mlops/id_ed25519_group_key{,.pub}` on the scheduler. Keep `student-admin_key` there only for [`ssh_key_access.sh`](ssh_key_access.sh) to restore the authorized group public key after a rebuild. All deployment and monitoring SSH calls use the group private key on public `23001`.
 2. Make sure the scheduler user has `bash`, OpenSSH, `curl`, Python 3, GNU `timeout`, and `flock`. Ubuntu 22.04 provides these through its usual packages; install missing packages as an administrator if needed. The target needs Python 3, `venv`, and passwordless `sudo -n` for `student-admin`.
-3. Add these two lines to the repo-root `.env` (mode `600`). The existing red-team script can create the Discord line with `./redteam_scan_flag.sh --init-discord`. Create a separate Healthchecks.io check and copy its ping URL; the monitor reads the file as data and never executes it.
+3. Keep the repo-root `.env` private (mode `600`). The red-team script can create the Discord line with `./redteam_scan_flag.sh --init-discord`. Cowrie uses `HEALTHCHECKS_PING_URL`; redteam has a separate Healthchecks check and stores its URL as `REDTEAM_HEALTHCHECKS_PING_URL` when its cron is initialized.
 
    ```dotenv
    DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/REPLACE_WITH_YOURS
    HEALTHCHECKS_PING_URL=https://hc-ping.com/REPLACE_WITH_CHECK_UUID
    ```
 
-   Run `chmod 600 .env` after editing it. Keep the real URLs out of Git and command arguments.
+   Run `chmod 600 .env` after editing it. Keep the real URLs out of Git and command arguments. The monitor reads the file as data and never executes it.
 
 4. In Healthchecks.io, set the check's period to **1 minute**, grace to **4 minutes**, and connect its Discord integration. This heartbeat reports whether the scheduler monitor ran, even when node 24 is down. A missed heartbeat covers a dead scheduler, disabled cron, or a monitor that cannot complete.
-5. Review and install the two independent user-cron entries. The installer preserves unrelated crontab lines and removes prior direct `ssh_key_access.sh` jobs so key repair runs inside the locked reconciler.
+5. Initialize redteam's independent 45-minute schedule. The command securely prompts for its Healthchecks ping URL, preserves unrelated and Cowrie crontab entries, and replaces older direct redteam scan jobs. Set that Healthchecks check's period to **45 minutes** with a suitable grace period. The first scheduled attempt is at the next quarter-hour cron tick; full scans still obey the September 29–October 1 time window in the script.
+
+   ```bash
+   ./redteam_scan_flag.sh --init-cron
+   crontab -l
+   ```
+
+6. Review and install Cowrie's two independent user-cron entries. The installer preserves unrelated crontab lines and removes prior direct `ssh_key_access.sh` jobs so key repair runs inside the locked reconciler.
 
    ```bash
    bash cowrie/install_cron.sh --dry-run
