@@ -20,10 +20,17 @@ ROUTE_WINDOW_START=20260929120000
 ROUTE_WINDOW_END=20261001120000
 ROUTE_INTERVAL_SECONDS=2700
 DEPLOY_CHECK_TIMEOUT=25s
-MONITOR_JITTER_MAX_SECONDS=20
+MONITOR_JITTER_MAX_SECONDS="${COWRIE_MONITOR_JITTER_MAX_SECONDS:-20}"
 
-if (( $# != 0 )); then
-    echo "Usage: $0" >&2
+monitor_mode=minute
+if (( $# == 1 )) && [[ "$1" == --persistent ]]; then
+    monitor_mode=persistent
+elif (( $# != 0 )); then
+    echo "Usage: $0 [--persistent]" >&2
+    exit 2
+fi
+if [[ ! "$MONITOR_JITTER_MAX_SECONDS" =~ ^([0-9]|1[0-9]|20)$ ]]; then
+    echo "ERROR: monitor jitter must be an integer from 0 to 20 seconds." >&2
     exit 2
 fi
 
@@ -157,8 +164,12 @@ fi
 reasons=()
 repair_mode=''
 check_output=''
+check_command=("$SCRIPT_DIR/deploy.sh" --check)
+if [[ "$monitor_mode" == persistent ]]; then
+    check_command=("$SCRIPT_DIR/persistent.sh" --check)
+fi
 if check_output="$(timeout --kill-after=1s "$DEPLOY_CHECK_TIMEOUT" \
-    "$SCRIPT_DIR/deploy.sh" --check 2>&1)"; then
+    "${check_command[@]}" 2>&1)"; then
     check_status=0
 else
     check_status=$?
@@ -170,7 +181,7 @@ case "$check_status" in
     2|3|4|124)
         reason="group-key management SSH on $SSH_PORT failed"
         [[ "$check_status" == 3 ]] && reason="authorized_keys does not match the group public key"
-        [[ "$check_status" == 4 ]] && reason="group key material is missing or unreadable"
+        [[ "$check_status" == 4 ]] && reason="group key material is missing, unreadable, or inconsistent"
         reasons+=("$reason")
         repair_mode=--repair-access
         ;;
@@ -337,9 +348,15 @@ fi
 
 if [[ -n "$repair_mode" ]]; then
     mkdir -p -- "$(dirname -- "$REPAIR_LOG")"
-    nohup /bin/bash "$SCRIPT_DIR/reconcile.sh" "$repair_mode" \
-        >> "$REPAIR_LOG" 2>&1 </dev/null &
-    log "Started background Cowrie recovery ($repair_mode)."
+    if [[ "$monitor_mode" == persistent ]]; then
+        nohup /bin/bash "$SCRIPT_DIR/persistent.sh" --recover \
+            >> "$REPAIR_LOG" 2>&1 </dev/null 9>&- &
+        log "Started background persistent Cowrie recovery."
+    else
+        nohup /bin/bash "$SCRIPT_DIR/reconcile.sh" "$repair_mode" \
+            >> "$REPAIR_LOG" 2>&1 </dev/null 9>&- &
+        log "Started background Cowrie recovery ($repair_mode)."
+    fi
 fi
 
 if "$alert_failed" || "$route_alert_failed" || "$heartbeat_failed" || \

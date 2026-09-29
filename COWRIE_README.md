@@ -24,28 +24,34 @@ The previous VM helper scripts remain under [`old_scripts/`](old_scripts/) and a
 
    ```dotenv
    DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/REPLACE_WITH_YOURS
-   HEALTHCHECKS_PING_URL=https://hc-ping.com/REPLACE_WITH_CHECK_UUID
+   HEALTHCHECKS_PING_URL=https://hc-ping.com/REPLACE_WITH_COWRIE_CHECK_UUID
+   REDTEAM_HEALTHCHECKS_PING_URL=https://hc-ping.com/REPLACE_WITH_REDTEAM_CHECK_UUID
    ```
 
    Run `chmod 600 .env` after editing it. Keep the real URLs out of Git and command arguments. The monitor reads the file as data and never executes it.
 
 4. In Healthchecks.io, set **Cowrie Deploy & SSH** to a **1-minute** period with a **5-minute** grace period, and connect its Discord integration. This heartbeat reports whether the scheduler monitor ran, even when node 24 is down. A missed heartbeat covers a dead scheduler, disabled cron, or a monitor that cannot complete.
-5. Initialize redteam's independent 45-minute schedule. The command securely prompts for its Healthchecks ping URL, preserves unrelated and Cowrie crontab entries, and replaces older direct redteam scan jobs. Set **RedTeam Cron** to a **45-minute** period with a **2-hour** grace period. The first scheduled attempt is at the next quarter-hour cron tick; full scans still obey the September 29–October 1 time window in the script.
+5. Configure redteam's independent Healthchecks URL if `REDTEAM_HEALTHCHECKS_PING_URL` is missing. The command securely prompts for the URL and installs the existing redteam schedule. Set **RedTeam Cron** to a **45-minute** period with a **2-hour** grace period. The cron entry runs every 15 minutes, while the script gates full scans to at least 45 minutes apart and to the September 29–October 1 scan window.
 
    ```bash
    ./redteam_scan_flag.sh --init-cron
    crontab -l
    ```
 
-6. Review and install Cowrie's single user-cron entry. The installer preserves unrelated crontab lines and removes the previous monitor/reconciler entries and direct `ssh_key_access.sh` jobs.
+6. Choose one Cowrie mode. Run its dry run to preview the resulting crontab, then run the init script. Each script validates the three `.env` notification URLs, sends test pings to both Healthchecks checks and one Discord test message, installs exactly one Cowrie cron entry, and keeps redteam's current 45-minute schedule. Neither init script starts a redteam scan. After the notification tests, the persistent init runs `cowrie/persistent.sh --initialize` to establish and test the SSH master before changing the crontab. If that step or cron installation fails while switching from minute mode, it closes the new master. The minute init closes an existing persistent master before switching cron. Failed preflight checks leave the existing crontab in place.
 
    ```bash
-   bash cowrie/install_cron.sh --dry-run
-   bash cowrie/install_cron.sh
+   bash init_minute.sh --dry-run
+   bash init_minute.sh
+   # Or select persistent mode instead:
+   bash init_persistent.sh --dry-run
+   bash init_persistent.sh
    crontab -l
    ```
 
-`cowrie/monitor.sh` is the once-a-minute coordinator. Each run waits a random 0–20 seconds before checking, so successive runs are usually 40–80 seconds apart while remaining within the Healthchecks grace period. Monitor log entries use Boston time (`America/New_York`) in `YYYY-MM-DD HH:MM:SS EDT/EST` format. Its ordinary healthy check uses one authenticated SSH session on `23001` to validate the group key in `authorized_keys`, the Cowrie deployment, both systemd services, and their listeners. It then updates the monitor state and pings Healthchecks. When access or deployment is unhealthy, it starts the corresponding locked repair in the background so a slow repair cannot hold up the next heartbeat. Access recovery makes one bounded TCP probe before trying the group and bootstrap keys; subsequent repair work opens additional SSH sessions only as needed.
+   Switch modes by running the other init script. Both preserve unrelated cron entries and replace old Cowrie jobs. The persistent checker makes jittered reconnection attempts once a minute for 20 minutes after a lost connection, then observes a 30-minute cooldown before another retry window. Heartbeats and alerts continue during the cooldown. Redteam's full scan still makes 24 fresh SSH attempts, which can independently trigger the firewall.
+
+`cowrie/monitor.sh` is the once-a-minute coordinator in regular mode; `cowrie/monitor.sh --persistent` selects the maintained SSH connection. Each run waits a random 0–20 seconds before checking, so successive runs are usually 40–80 seconds apart while remaining within the Healthchecks grace period. Monitor log entries use Boston time (`America/New_York`) in `YYYY-MM-DD HH:MM:SS EDT/EST` format. In regular mode, each healthy check opens one authenticated SSH session on `23001` to validate the group key in `authorized_keys`, the Cowrie deployment, both systemd services, and their listeners. It then updates the monitor state and pings Healthchecks. When access or deployment is unhealthy, it starts the corresponding locked repair in the background so a slow repair cannot hold up the next heartbeat. Access recovery makes one bounded TCP probe before trying the group and bootstrap keys; subsequent repair work opens additional SSH sessions only as needed.
 
 The public `22001` delayed-banner probe has a separate persisted timer. It runs immediately on the first monitor minute inside the half-open window **September 29, 2026 noon to October 1, 2026 noon, America/New_York**, then when at least **45 minutes** have passed since its previous probe. It does not probe outside that window. Two consecutive failed route probes trigger one Discord alert; a passing probe sends recovery. Failed Discord deliveries remain pending and are retried. If the route recovers before an undelivered failure alert can be sent, the monitor sends one delayed outage-recovered notice. Route state, monitor state, and logs are under `${XDG_STATE_HOME:-$HOME/.local/state}/cowrie-monitor/`; cron output is also written to `logs/cowrie_monitor.log` and repair output to `logs/cowrie_reconcile.log`.
 

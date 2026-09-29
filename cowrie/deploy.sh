@@ -71,6 +71,21 @@ SSH_OPTIONS=(
     -o LogLevel=ERROR
 )
 
+# Persistent monitoring reuses an already authenticated master. A failing
+# ProxyCommand prevents OpenSSH from silently opening a new TCP connection if
+# the control socket disappears between the liveness check and this command.
+if [[ -n "${COWRIE_SSH_CONTROL_PATH:-}" ]]; then
+    if [[ "$COWRIE_SSH_CONTROL_PATH" != /* ]]; then
+        printf 'ERROR: COWRIE_SSH_CONTROL_PATH must be absolute.\n' >&2
+        exit 2
+    fi
+    SSH_OPTIONS+=(
+        -S "$COWRIE_SSH_CONTROL_PATH"
+        -o ControlMaster=no
+        -o ProxyCommand=/bin/false
+    )
+fi
+
 local_stage=""
 remote_stage=""
 cleanup() {

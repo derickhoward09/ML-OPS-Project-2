@@ -3,6 +3,7 @@
 from datetime import datetime
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -112,6 +113,7 @@ class CowrieMonitorTests(unittest.TestCase):
                 "COWRIE_MONITOR_CONFIG": str(config),
                 "COWRIE_MONITOR_STATE_DIR": str(self.state_dir),
                 "COWRIE_MONITOR_RECONCILE_LOG": str(root / "logs" / "reconcile.log"),
+                "COWRIE_MONITOR_JITTER_MAX_SECONDS": "0",
                 "MOCK_EVENTS": str(self.events),
                 "MOCK_SSH_ARGS": str(self.ssh_args),
                 "MOCK_SSH_SCRIPT": str(self.ssh_script),
@@ -161,6 +163,48 @@ class CowrieMonitorTests(unittest.TestCase):
         self.assertIn("CertificateFile=none", args)
         self.assertIn("authorized_keys", self.ssh_script.read_text())
         self.assertEqual(self.events_seen(), ["heartbeat"])
+
+    def test_persistent_minute_uses_checker_and_starts_recovery_only_on_failure(self):
+        fixture = self.state_dir.parent / "repo" / "cowrie"
+        fixture.mkdir(parents=True)
+        shutil.copy2(MONITOR, fixture / "monitor.sh")
+        checker = fixture / "persistent.sh"
+        checker.write_text(
+            "#!/usr/bin/env bash\n"
+            'printf "%s\\n" "$1" >> "$MOCK_PERSISTENT_CALLS"\n'
+            'exit "${MOCK_PERSISTENT_STATUS:-0}"\n'
+        )
+        checker.chmod(0o755)
+        persistent_calls = self.state_dir.parent / "persistent_calls"
+        env = self.env.copy()
+        env["MOCK_PERSISTENT_CALLS"] = str(persistent_calls)
+
+        healthy = subprocess.run(
+            ["bash", str(fixture / "monitor.sh"), "--persistent"],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=15,
+        )
+        self.assertEqual(healthy.returncode, 0, healthy.stdout + healthy.stderr)
+        self.assertEqual(persistent_calls.read_text().splitlines(), ["--check"])
+        self.assertEqual(self.count_lines(self.ssh_calls), 0)
+        self.assertEqual(self.count_lines(self.repairs), 0)
+
+        env["MOCK_PERSISTENT_STATUS"] = "2"
+        lost = subprocess.run(
+            ["bash", str(fixture / "monitor.sh"), "--persistent"],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=15,
+        )
+        self.assertEqual(lost.returncode, 1, lost.stdout + lost.stderr)
+        self.assertEqual(persistent_calls.read_text().splitlines(), ["--check", "--check"])
+        self.assertEqual(self.count_lines(self.ssh_calls), 0)
+        self.wait_for_lines(self.repairs, 1)
+        self.assertIn("persistent.sh --recover", self.repairs.read_text())
+        self.assertEqual(self.events_seen().count("heartbeat"), 2)
 
     def test_two_management_failures_then_one_recovery_and_heartbeat_each_run(self):
         bad = {"MOCK_SSH_STATUS": "1"}
