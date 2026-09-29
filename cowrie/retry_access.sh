@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
-# Retry management SSH recovery while node 24 comes back after a rebuild.
-# Called by the once-a-minute, locked reconciler; no separate cron job needed.
+# Check management SSH recovery once per reconciler run.
+# The reconciler runs once a minute; no separate cron job is needed.
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 HOST=paffenroth-23.dyn.wpi.edu
 PORT=23001
-RETRY_INTERVAL=3
-RETRY_WINDOW=55
-REPAIR_INTERVAL=15
 
 if (( $# != 0 )); then
     echo "Usage: $0" >&2
@@ -42,38 +39,14 @@ except OSError:
 PY
 }
 
-deadline=$((SECONDS + RETRY_WINDOW))
-port_was_unavailable=true
-next_repair_at=0
-while (( SECONDS < deadline )); do
-    probe_started=$SECONDS
-    repair_attempted=false
-    if probe_management_port; then
-        if "$port_was_unavailable" || (( SECONDS >= next_repair_at )); then
-            port_was_unavailable=false
-            repair_attempted=true
-            if "$REPO_ROOT/ssh_key_access.sh"; then
-                exit 0
-            fi
-            next_repair_at=$((SECONDS + REPAIR_INTERVAL))
-            log "Key recovery failed on port $PORT; continuing three-second port checks."
-        fi
-    else
-        port_was_unavailable=true
-    fi
+if ! probe_management_port; then
+    log "Management SSH port $PORT is unavailable; the next minute's cron run will retry."
+    exit 1
+fi
 
-    # TCP probes start roughly three seconds apart. A key repair can take
-    # longer; resume probing three seconds after it finishes.
-    if "$repair_attempted"; then
-        delay=$RETRY_INTERVAL
-    else
-        delay=$((RETRY_INTERVAL - (SECONDS - probe_started)))
-    fi
-    (( SECONDS < deadline )) || break
-    if (( delay > 0 )); then
-        sleep "$delay"
-    fi
-done
+if ! "$REPO_ROOT/ssh_key_access.sh"; then
+    log "Key recovery failed on port $PORT; the next minute's cron run will retry."
+    exit 1
+fi
 
-log "Management SSH access is still unavailable; the next cron run will retry."
-exit 1
+exit 0
