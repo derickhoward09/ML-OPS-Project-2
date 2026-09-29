@@ -22,7 +22,7 @@ log() {
     printf '%s | %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"
 }
 
-if ! "$REPO_ROOT/ssh_key_access.sh"; then
+if ! "$SCRIPT_DIR/retry_access.sh"; then
     log "Access recovery failed; Cowrie deployment is deferred."
     exit 1
 fi

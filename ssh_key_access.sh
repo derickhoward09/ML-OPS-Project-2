@@ -50,7 +50,7 @@ if ! "$TEST_MODE" && command -v flock >/dev/null 2>&1; then
     exec 8>"$LOCK_DIR/access.lock"
     if ! flock -n 8; then
         printf '%s\n' "Another SSH access repair is running; skipping this invocation."
-        exit 0
+        exit 75
     fi
 fi
 
