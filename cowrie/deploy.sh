@@ -1,0 +1,351 @@
+#!/usr/bin/env bash
+# Reconcile the node 24 Cowrie decoy. All SSH authentication uses the group key.
+# Run from the scheduler VM as an ordinary user; only the target uses sudo -n.
+
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROXY_SOURCE="$SCRIPT_DIR/delay_proxy.py"
+GROUP_KEY="$HOME/.ssh/mlops/id_ed25519_group_key"
+TARGET="student-admin@paffenroth-23.dyn.wpi.edu"
+SSH_PORT=22024
+
+usage() {
+    cat <<'EOF'
+Usage: cowrie/deploy.sh [--check|--check-only]
+
+With no arguments, install or repair Cowrie 3.0.15 and the delay proxy on node
+24 only when the desired state is missing or unhealthy. --check reports health
+without modifying the target. Run ssh_key_access.sh first if group-key access
+needs repair. This script never uses the student-admin bootstrap key.
+EOF
+}
+
+MODE=deploy
+case "${1:-}" in
+    "") ;;
+    --check|--check-only) MODE=check ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+esac
+if (( $# > 1 )); then
+    usage >&2
+    exit 2
+fi
+
+if [[ ! -s "$GROUP_KEY" || ! -r "$GROUP_KEY" ]]; then
+    printf 'ERROR: group SSH key is missing or unreadable: %s\n' "$GROUP_KEY" >&2
+    exit 1
+fi
+if [[ ! -s "$PROXY_SOURCE" || ! -r "$PROXY_SOURCE" ]]; then
+    printf 'ERROR: delay proxy source is missing or unreadable: %s\n' "$PROXY_SOURCE" >&2
+    exit 1
+fi
+
+SSH_OPTIONS=(
+    -T -F /dev/null -p "$SSH_PORT" -i "$GROUP_KEY"
+    -o BatchMode=yes
+    -o IdentitiesOnly=yes
+    -o CertificateFile=none
+    -o PreferredAuthentications=publickey
+    -o PasswordAuthentication=no
+    -o KbdInteractiveAuthentication=no
+    -o GSSAPIAuthentication=no
+    -o HostbasedAuthentication=no
+    -o ConnectTimeout=8
+    -o ConnectionAttempts=1
+    -o ServerAliveInterval=5
+    -o ServerAliveCountMax=2
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+    -o GlobalKnownHostsFile=/dev/null
+    -o ForwardAgent=no
+    -o ClearAllForwardings=yes
+    -o LogLevel=ERROR
+)
+
+local_stage=""
+remote_stage=""
+cleanup() {
+    if [[ -n "$remote_stage" ]]; then
+        ssh "${SSH_OPTIONS[@]}" "$TARGET" "rm -rf -- '$remote_stage'" \
+            >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$local_stage" ]]; then
+        rm -rf -- "$local_stage"
+    fi
+}
+trap cleanup EXIT
+
+local_stage="$(mktemp -d "${TMPDIR:-/tmp}/cowrie-deploy.XXXXXXXX")"
+
+cat > "$local_stage/cowrie.cfg" <<'EOF'
+# Managed by cowrie/deploy.sh. Authentication must never succeed.
+[honeypot]
+backend = shell
+auth_class = UserDB
+etc_path = etc
+
+[ssh]
+enabled = true
+listen_endpoints = tcp:2222:interface=127.0.0.1
+auth_publickey_allow_any = false
+auth_none_enabled = false
+auth_keyboard_interactive_enabled = false
+sftp_enabled = false
+forwarding = false
+forward_redirect = false
+forward_tunnel = false
+
+[telnet]
+enabled = false
+EOF
+
+# Cowrie UserDB uses a leading ! for a deny rule. This one wildcard rule
+# rejects every password for every username, including empty passwords.
+printf '*:x:!*\n' > "$local_stage/userdb.txt"
+
+cat > "$local_stage/cowrie.service" <<'EOF'
+[Unit]
+Description=Cowrie SSH honeypot on loopback
+After=network-online.target
+Wants=network-online.target
+Upholds=cowrie-delay.service
+
+[Service]
+Type=simple
+User=cowrie
+Group=cowrie
+WorkingDirectory=/opt/cowrie/honeypot
+ExecStart=/opt/cowrie/honeypot/cowrie-env/bin/cowrie start -n
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
+UMask=0077
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > "$local_stage/cowrie-delay.service" <<'EOF'
+[Unit]
+Description=Delayed SSH front end for Cowrie on port 22001
+After=network-online.target cowrie.service
+Wants=network-online.target
+BindsTo=cowrie.service
+
+[Service]
+Type=simple
+User=cowrie
+Group=cowrie
+WorkingDirectory=/opt/cowrie
+ExecStart=/usr/bin/python3 /opt/cowrie/delay_proxy.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
+UMask=0077
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cp -- "$PROXY_SOURCE" "$local_stage/delay_proxy.py"
+
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
+
+CFG_HASH="$(sha256_file "$local_stage/cowrie.cfg")"
+USERDB_HASH="$(sha256_file "$local_stage/userdb.txt")"
+COWRIE_UNIT_HASH="$(sha256_file "$local_stage/cowrie.service")"
+DELAY_UNIT_HASH="$(sha256_file "$local_stage/cowrie-delay.service")"
+PROXY_HASH="$(sha256_file "$local_stage/delay_proxy.py")"
+
+verify_remote() {
+    ssh "${SSH_OPTIONS[@]}" "$TARGET" \
+        "sudo -n bash -s -- '$CFG_HASH' '$USERDB_HASH' '$COWRIE_UNIT_HASH' '$DELAY_UNIT_HASH' '$PROXY_HASH'" \
+        <<'REMOTE_CHECK'
+set -Eeuo pipefail
+
+cfg_hash="$1"
+userdb_hash="$2"
+cowrie_unit_hash="$3"
+delay_unit_hash="$4"
+proxy_hash="$5"
+state=/opt/cowrie/honeypot
+
+unhealthy() {
+    printf 'Cowrie unhealthy: %s\n' "$1" >&2
+    exit 1
+}
+matches_hash() {
+    [[ -f "$2" ]] && printf '%s  %s\n' "$1" "$2" | sha256sum -c --status
+}
+matches_attrs() {
+    [[ -f "$2" ]] && [[ "$(stat -c '%U:%G:%a' "$2")" == "$1" ]]
+}
+
+[[ "${EUID}" == 0 ]] || unhealthy 'passwordless target sudo is unavailable'
+getent passwd cowrie >/dev/null || unhealthy 'cowrie user is missing'
+getent group cowrie >/dev/null || unhealthy 'cowrie group is missing'
+[[ "$(stat -c '%U:%G:%a' /opt/cowrie 2>/dev/null)" == root:root:755 ]] || unhealthy '/opt/cowrie directory ownership or permissions differ'
+[[ "$(stat -c '%U:%G:%a' "$state" 2>/dev/null)" == cowrie:cowrie:750 ]] || unhealthy 'Cowrie state directory ownership or permissions differ'
+[[ ! -e "$state/cowrie.cfg" ]] || unhealthy 'flat cowrie.cfg overrides managed configuration'
+[[ -x "$state/cowrie-env/bin/python" ]] || unhealthy 'Cowrie virtual environment is missing'
+[[ -x "$state/cowrie-env/bin/cowrie" ]] || unhealthy 'Cowrie command is missing'
+version="$("$state/cowrie-env/bin/python" -c 'from importlib.metadata import version; print(version("cowrie"))' 2>/dev/null)" || unhealthy 'Cowrie package is missing'
+[[ "$version" == 3.0.15 ]] || unhealthy "Cowrie version is $version, expected 3.0.15"
+matches_hash "$cfg_hash" "$state/etc/cowrie.cfg" || unhealthy 'cowrie.cfg differs'
+matches_hash "$userdb_hash" "$state/etc/userdb.txt" || unhealthy 'userdb.txt differs'
+matches_hash "$cowrie_unit_hash" /etc/systemd/system/cowrie.service || unhealthy 'cowrie.service differs'
+matches_hash "$delay_unit_hash" /etc/systemd/system/cowrie-delay.service || unhealthy 'cowrie-delay.service differs'
+matches_hash "$proxy_hash" /opt/cowrie/delay_proxy.py || unhealthy 'delay proxy differs'
+matches_attrs cowrie:cowrie:600 "$state/etc/cowrie.cfg" || unhealthy 'cowrie.cfg ownership or permissions differ'
+matches_attrs cowrie:cowrie:600 "$state/etc/userdb.txt" || unhealthy 'userdb.txt ownership or permissions differ'
+matches_attrs root:root:644 /etc/systemd/system/cowrie.service || unhealthy 'cowrie.service ownership or permissions differ'
+matches_attrs root:root:644 /etc/systemd/system/cowrie-delay.service || unhealthy 'cowrie-delay.service ownership or permissions differ'
+matches_attrs root:root:644 /opt/cowrie/delay_proxy.py || unhealthy 'delay proxy ownership or permissions differ'
+systemctl is-enabled --quiet cowrie.service || unhealthy 'cowrie.service is disabled'
+systemctl is-enabled --quiet cowrie-delay.service || unhealthy 'cowrie-delay.service is disabled'
+systemctl is-active --quiet cowrie.service || unhealthy 'cowrie.service is inactive'
+systemctl is-active --quiet cowrie-delay.service || unhealthy 'cowrie-delay.service is inactive'
+ss -H -ltn | awk '$4 ~ /:2222$/ { found=1; if ($4 != "127.0.0.1:2222") bad=1 } END { exit !(found && !bad) }' || unhealthy 'Cowrie is not bound only to loopback:2222'
+ss -H -ltn | awk '$4 ~ /^(0[.]0[.]0[.]0|[*]):22001$/ { found=1 } END { exit !found }' || unhealthy 'delay proxy is not bound to public port 22001'
+REMOTE_CHECK
+}
+
+if verify_remote; then
+    printf 'Cowrie healthy on node 24; no changes made.\n'
+    exit 0
+fi
+if [[ "$MODE" == check ]]; then
+    exit 1
+fi
+
+printf 'Cowrie state is missing or unhealthy; reconciling node 24.\n'
+
+# Check the exact sudo operation required by the installer before upload.
+ssh "${SSH_OPTIONS[@]}" "$TARGET" 'sudo -n bash -c true' >/dev/null
+remote_stage="$(ssh "${SSH_OPTIONS[@]}" "$TARGET" 'mktemp -d /tmp/cowrie-stage.XXXXXXXX')"
+if [[ ! "$remote_stage" =~ ^/tmp/cowrie-stage\.[A-Za-z0-9]+$ ]]; then
+    printf 'ERROR: unexpected remote staging path.\n' >&2
+    remote_stage=""
+    exit 1
+fi
+tar -C "$local_stage" -cf - . | \
+    ssh "${SSH_OPTIONS[@]}" "$TARGET" "tar -xf - -C '$remote_stage'"
+
+ssh "${SSH_OPTIONS[@]}" "$TARGET" "sudo -n bash -s -- '$remote_stage'" <<'REMOTE_INSTALL'
+set -Eeuo pipefail
+
+stage="$1"
+state=/opt/cowrie/honeypot
+venv="$state/cowrie-env"
+
+[[ "$EUID" == 0 ]] || { echo 'ERROR: target sudo is required' >&2; exit 1; }
+[[ "$stage" =~ ^/tmp/cowrie-stage\.[A-Za-z0-9]+$ ]] || { echo 'ERROR: invalid staging path' >&2; exit 1; }
+for file in cowrie.cfg userdb.txt cowrie.service cowrie-delay.service delay_proxy.py; do
+    [[ -f "$stage/$file" && ! -L "$stage/$file" ]] || { echo "ERROR: staging file $file is missing" >&2; exit 1; }
+done
+. /etc/os-release
+[[ "$ID" == ubuntu && "$VERSION_ID" == 22.04 ]] || { echo 'ERROR: expected Ubuntu 22.04 on target' >&2; exit 1; }
+
+# Stop the managed services before changing their package or effective config.
+for service in cowrie-delay.service cowrie.service; do
+    if systemctl cat "$service" >/dev/null 2>&1; then
+        systemctl stop "$service"
+    fi
+done
+
+packages=(python3-pip python3-venv libssl-dev libffi-dev build-essential libpython3-dev)
+missing=()
+for package in "${packages[@]}"; do
+    if [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]]; then
+        missing+=("$package")
+    fi
+done
+if (( ${#missing[@]} )); then
+    echo 'Installing missing Cowrie system dependencies.'
+    apt-get -qq update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"
+fi
+
+if ! getent group cowrie >/dev/null; then
+    groupadd --system cowrie
+fi
+if ! getent passwd cowrie >/dev/null; then
+    useradd --system --gid cowrie --create-home --home-dir /opt/cowrie --shell /usr/sbin/nologin cowrie
+fi
+install -d -o root -g root -m 0755 /opt/cowrie
+install -d -o cowrie -g cowrie -m 0750 "$state"
+
+if [[ ! -x "$venv/bin/python" ]]; then
+    runuser -u cowrie -- python3 -m venv "$venv"
+fi
+version="$("$venv/bin/python" -c 'from importlib.metadata import version; print(version("cowrie"))' 2>/dev/null || true)"
+if [[ "$version" != 3.0.15 || ! -x "$venv/bin/cowrie" ]]; then
+    echo 'Installing Cowrie 3.0.15 into its virtual environment.'
+    runuser -u cowrie -- env HOME=/opt/cowrie "$venv/bin/python" -m pip install \
+        --disable-pip-version-check --no-input --no-cache-dir --force-reinstall 'cowrie==3.0.15'
+fi
+
+if [[ ! -f "$state/etc/cowrie.cfg" ]]; then
+    echo 'Initializing Cowrie state directory.'
+    runuser -u cowrie -- sh -c 'cd /opt/cowrie/honeypot && ./cowrie-env/bin/cowrie init'
+fi
+if [[ -e "$state/cowrie.cfg" ]]; then
+    echo 'ERROR: flat cowrie.cfg would override managed etc/cowrie.cfg; remove it first.' >&2
+    exit 1
+fi
+
+# Install every config and unit from staging before starting either service.
+install_managed() {
+    src="$1"
+    dest="$2"
+    owner="$3"
+    group="$4"
+    mode="$5"
+    if [[ -f "$dest" ]] && cmp -s "$src" "$dest" && \
+       [[ "$(stat -c '%U:%G:%a' "$dest")" == "$owner:$group:${mode#0}" ]]; then
+        return
+    fi
+    tmp="${dest}.new.$$"
+    install -o "$owner" -g "$group" -m "$mode" "$src" "$tmp"
+    mv -f -- "$tmp" "$dest"
+}
+install -d -o cowrie -g cowrie -m 0750 "$state/etc"
+install_managed "$stage/cowrie.cfg" "$state/etc/cowrie.cfg" cowrie cowrie 0600
+install_managed "$stage/userdb.txt" "$state/etc/userdb.txt" cowrie cowrie 0600
+install_managed "$stage/delay_proxy.py" /opt/cowrie/delay_proxy.py root root 0644
+install_managed "$stage/cowrie.service" /etc/systemd/system/cowrie.service root root 0644
+install_managed "$stage/cowrie-delay.service" /etc/systemd/system/cowrie-delay.service root root 0644
+
+systemctl daemon-reload
+systemctl enable cowrie.service cowrie-delay.service >/dev/null
+systemctl start cowrie.service
+systemctl start cowrie-delay.service
+REMOTE_INSTALL
+
+# The remote script may have succeeded while a service is still starting.
+for attempt in {1..15}; do
+    if verify_remote; then
+        printf 'Cowrie 3.0.15 and delay proxy are healthy on node 24.\n'
+        exit 0
+    fi
+    sleep 2
+done
+printf 'ERROR: deployment completed but Cowrie health verification failed.\n' >&2
+exit 1

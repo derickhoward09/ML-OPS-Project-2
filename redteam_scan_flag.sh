@@ -212,7 +212,7 @@ check_ntp_clock() {
         return 0
     fi
 
-    if ! result="$(python3 "$SCRIPT_DIR/scripts/ntp_clock_check.py" \
+    if ! result="$(python3 "$SCRIPT_DIR/ntp_clock_check.py" \
         "$NTP_SERVER" "$NTP_TOLERANCE_SECONDS" 2>&1)"; then
         record_ntp_failure "$result"
         return 0
