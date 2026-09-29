@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run once a minute on the scheduler VM, independently of reconcile.sh.
+# Run the shared Cowrie check once a minute. Repairs run in a separate,
+# locked process so a deployment cannot block the monitor heartbeat.
 set -Eeuo pipefail
 umask 077
 
@@ -7,19 +8,25 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${COWRIE_MONITOR_CONFIG:-$SCRIPT_DIR/../.env}"
 STATE_DIR="${COWRIE_MONITOR_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/cowrie-monitor}"
 STATE_FILE="$STATE_DIR/status"
+ROUTE_STATE_FILE="$STATE_DIR/route-status"
 LOG_FILE="$STATE_DIR/monitor.log"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPAIR_LOG="${COWRIE_MONITOR_RECONCILE_LOG:-$REPO_ROOT/logs/cowrie_reconcile.log}"
 HOST=paffenroth-23.dyn.wpi.edu
 SSH_PORT=23001
 PUBLIC_PORT=22001
-REMOTE_USER=student-admin
-GROUP_KEY="$HOME/.ssh/mlops/id_ed25519_group_key"
+TIMEZONE=America/New_York
+ROUTE_WINDOW_START=20260929120000
+ROUTE_WINDOW_END=20261001120000
+ROUTE_INTERVAL_SECONDS=2700
+DEPLOY_CHECK_TIMEOUT=25s
 
 if (( $# != 0 )); then
     echo "Usage: $0" >&2
     exit 2
 fi
 
-for command_name in flock timeout ssh python3 curl; do
+for command_name in flock timeout ssh python3 curl date; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         echo "ERROR: missing required command: $command_name" >&2
         exit 1
@@ -117,38 +124,70 @@ fi
 
 read_config || true
 
-reasons=()
-if [[ ! -f "$GROUP_KEY" || ! -s "$GROUP_KEY" || ! -r "$GROUP_KEY" ]]; then
-    reasons+=("group key missing or unreadable")
-else
-    ssh_output=''
-    if ! ssh_output="$(timeout --kill-after=1s 12s ssh -T -F /dev/null -i "$GROUP_KEY" -p "$SSH_PORT" \
-        -o IdentitiesOnly=yes -o CertificateFile=none -o BatchMode=yes -o ConnectionAttempts=1 \
-        -o PreferredAuthentications=publickey -o PasswordAuthentication=no \
-        -o KbdInteractiveAuthentication=no -o GSSAPIAuthentication=no \
-        -o HostbasedAuthentication=no \
-        -o ConnectTimeout=4 -o ServerAliveInterval=4 -o ServerAliveCountMax=1 \
-        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        -o GlobalKnownHostsFile=/dev/null \
-        "$REMOTE_USER@$HOST" \
-        'for service in cowrie.service cowrie-delay.service; do if systemctl is-active --quiet "$service"; then printf "active\n"; else printf "inactive\n"; fi; done' \
-        2>/dev/null)"; then
-        reasons+=("group-key management SSH on $SSH_PORT failed")
+route_last_epoch=0
+route_failures=0
+route_announced_state=healthy
+route_pending=none
+if [[ -f "$ROUTE_STATE_FILE" && ! -L "$ROUTE_STATE_FILE" ]]; then
+    IFS=' ' read -r stored_route_epoch stored_route_failures stored_route_state stored_route_pending \
+        < "$ROUTE_STATE_FILE" || true
+    if [[ "${stored_route_epoch:-}" =~ ^[0-9]+$ &&
+          "${stored_route_failures:-}" =~ ^[0-2]$ &&
+          ( "${stored_route_state:-}" == healthy || "${stored_route_state:-}" == failing ) &&
+          ( "${stored_route_pending:-}" == none || "${stored_route_pending:-}" == down ||
+            "${stored_route_pending:-}" == recovery || "${stored_route_pending:-}" == recovered ) ]]; then
+        route_last_epoch="$stored_route_epoch"
+        route_failures="$stored_route_failures"
+        route_announced_state="$stored_route_state"
+        route_pending="$stored_route_pending"
     else
-        expected_output=$'active\nactive'
-        if [[ "$ssh_output" != "$expected_output" ]]; then
-            first_status="${ssh_output%%$'\n'*}"
-            second_status=''
-            [[ "$ssh_output" == *$'\n'* ]] && second_status="${ssh_output#*$'\n'}"
-            [[ "$first_status" == active ]] || reasons+=("cowrie.service is not active")
-            [[ "$second_status" == active ]] || reasons+=("cowrie-delay.service is not active")
-        fi
+        log "Invalid 22001 route state; resetting counters."
     fi
 fi
 
-# A successful connect followed by a short silent read verifies the public
-# route reaches a banner-delaying listener, rather than management sshd.
-route_result="$(timeout --kill-after=1s 6s python3 - "$HOST" "$PUBLIC_PORT" <<'PY'
+reasons=()
+repair_mode=''
+check_output=''
+if check_output="$(timeout --kill-after=1s "$DEPLOY_CHECK_TIMEOUT" \
+    "$SCRIPT_DIR/deploy.sh" --check 2>&1)"; then
+    check_status=0
+else
+    check_status=$?
+fi
+
+case "$check_status" in
+    0)
+        ;;
+    2|3|4|124)
+        reason="group-key management SSH on $SSH_PORT failed"
+        [[ "$check_status" == 3 ]] && reason="authorized_keys does not match the group public key"
+        [[ "$check_status" == 4 ]] && reason="group key material is missing or unreadable"
+        reasons+=("$reason")
+        repair_mode=--repair-access
+        ;;
+    *)
+        summary_detail="$(printf '%s' "$check_output" | tr '\r\n' '  ' | cut -c1-240)"
+        [[ -n "$summary_detail" ]] || summary_detail="Cowrie deployment or service health check failed"
+        reasons+=("$summary_detail")
+        repair_mode=--repair-deploy
+        ;;
+esac
+
+route_due=false
+route_in_window=false
+route_failed_this_run=false
+route_result='not due'
+route_now_local="$(TZ="$TIMEZONE" date '+%Y%m%d%H%M%S')"
+route_now_epoch="$(date '+%s')"
+if [[ "$route_now_local" > "$ROUTE_WINDOW_START" || "$route_now_local" == "$ROUTE_WINDOW_START" ]] &&
+   [[ "$route_now_local" < "$ROUTE_WINDOW_END" ]]; then
+    route_in_window=true
+    if [[ "$route_last_epoch" == 0 ]] || (( route_now_epoch - route_last_epoch >= ROUTE_INTERVAL_SECONDS )); then
+        route_due=true
+        route_last_epoch="$route_now_epoch"
+        # Silence after a successful TCP connect is expected: the public route
+        # must delay its SSH banner until just before its 15-minute deadline.
+        route_result="$(timeout --kill-after=1s 6s python3 - "$HOST" "$PUBLIC_PORT" <<'PY'
 import socket
 import sys
 
@@ -165,7 +204,27 @@ except OSError:
     print("connect failed")
 PY
 )" || route_result="probe failed"
-[[ "$route_result" == ok ]] || reasons+=("public $PUBLIC_PORT route: $route_result")
+        if [[ "$route_result" == ok ]]; then
+            route_failures=0
+            if [[ "$route_announced_state" == failing ]]; then
+                route_pending=recovery
+            elif [[ "$route_pending" == down ]]; then
+                route_pending=recovered
+            fi
+        else
+            route_failed_this_run=true
+            if [[ "$route_announced_state" == failing && "$route_pending" == recovery ]]; then
+                route_pending=none
+            fi
+            if (( route_failures < 2 )); then
+                ((route_failures += 1))
+            fi
+            if (( route_failures >= 2 )) && [[ "$route_announced_state" == healthy && "$route_pending" == none ]]; then
+                route_pending=down
+            fi
+        fi
+    fi
+fi
 
 if (( ${#reasons[@]} == 0 )); then
     failures=0
@@ -190,7 +249,7 @@ if (( ${#reasons[@]} > 0 )); then
         fi
     fi
 elif [[ "$announced_state" == failing ]]; then
-    if send_discord "Cowrie node 24 RECOVERED: group-key SSH on $SSH_PORT, both services, and public $PUBLIC_PORT are healthy."; then
+    if send_discord "Cowrie node 24 RECOVERED: group-key SSH, authorized_keys, Cowrie deployment, and both services are healthy."; then
         announced_state=healthy
         pending_outage=0
         log "Discord recovery alert sent."
@@ -199,7 +258,7 @@ elif [[ "$announced_state" == failing ]]; then
         log "Discord recovery alert failed; will retry while healthy."
     fi
 elif [[ "$pending_outage" == 1 ]]; then
-    if send_discord "Cowrie node 24 OUTAGE RECOVERED: a sustained outage ended before its DOWN alert could be delivered. Group-key SSH on $SSH_PORT, both services, and public $PUBLIC_PORT are now healthy."; then
+    if send_discord "Cowrie node 24 OUTAGE RECOVERED: a sustained management or service outage ended before its DOWN alert could be delivered. Group-key SSH, authorized_keys, Cowrie deployment, and both services are now healthy."; then
         pending_outage=0
         log "Discord delayed outage recovery alert sent."
     else
@@ -208,10 +267,50 @@ elif [[ "$pending_outage" == 1 ]]; then
     fi
 fi
 
+route_alert_failed=false
+if "$route_in_window" || [[ "$route_pending" != none ]]; then
+    case "$route_pending" in
+        down)
+            if send_discord "Cowrie node 24 public port 22001 DOWN: two consecutive scheduled checks failed the delayed-banner test."; then
+                route_announced_state=failing
+                route_pending=none
+                log "Discord 22001 DOWN alert sent."
+            else
+                route_alert_failed=true
+                log "Discord 22001 DOWN alert failed; will retry."
+            fi
+            ;;
+        recovery)
+            if send_discord "Cowrie node 24 public port 22001 RECOVERED: the delayed-banner check passed."; then
+                route_announced_state=healthy
+                route_pending=none
+                log "Discord 22001 recovery alert sent."
+            else
+                route_alert_failed=true
+                log "Discord 22001 recovery alert failed; will retry."
+            fi
+            ;;
+        recovered)
+            if send_discord "Cowrie node 24 public port 22001 OUTAGE RECOVERED: the delayed-banner check passed after an undelivered DOWN alert."; then
+                route_announced_state=healthy
+                route_pending=none
+                log "Discord delayed 22001 recovery notice sent."
+            else
+                route_alert_failed=true
+                log "Discord delayed 22001 recovery notice failed; will retry."
+            fi
+            ;;
+    esac
+fi
+
 # State is committed after each completed check, even if a webhook failed.
 state_tmp="$(mktemp "$STATE_DIR/.status.XXXXXX")"
 printf '%s %s %s\n' "$failures" "$announced_state" "$pending_outage" > "$state_tmp"
 mv -f "$state_tmp" "$STATE_FILE"
+route_state_tmp="$(mktemp "$STATE_DIR/.route-status.XXXXXX")"
+printf '%s %s %s %s\n' "$route_last_epoch" "$route_failures" \
+    "$route_announced_state" "$route_pending" > "$route_state_tmp"
+mv -f "$route_state_tmp" "$ROUTE_STATE_FILE"
 
 heartbeat_failed=false
 if ! ping_healthchecks; then
@@ -219,12 +318,22 @@ if ! ping_healthchecks; then
     log "Healthchecks heartbeat failed or is unconfigured."
 fi
 
-if (( ${#reasons[@]} == 0 )); then
+if (( ${#reasons[@]} == 0 )) && ! "$route_failed_this_run"; then
     log "HEALTHY: $summary."
+elif (( ${#reasons[@]} == 0 )); then
+    log "HEALTHY on management SSH and deployment; public $PUBLIC_PORT check failed: $route_result."
 else
     log "UNHEALTHY ($failures consecutive): $summary."
 fi
 
-if "$alert_failed" || "$heartbeat_failed" || (( ${#reasons[@]} > 0 )); then
+if [[ -n "$repair_mode" ]]; then
+    mkdir -p -- "$(dirname -- "$REPAIR_LOG")"
+    nohup /bin/bash "$SCRIPT_DIR/reconcile.sh" "$repair_mode" \
+        >> "$REPAIR_LOG" 2>&1 </dev/null &
+    log "Started background Cowrie recovery ($repair_mode)."
+fi
+
+if "$alert_failed" || "$route_alert_failed" || "$heartbeat_failed" || \
+   (( ${#reasons[@]} > 0 )) || "$route_failed_this_run"; then
     exit 1
 fi

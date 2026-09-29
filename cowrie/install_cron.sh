@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the two scheduler jobs in the current user's crontab (no sudo).
+# Install the combined Cowrie monitor/reconciler in the current user's crontab.
 set -Eeuo pipefail
 
 if (( $# > 1 )) || { (( $# == 1 )) && [[ "$1" != --dry-run && "$1" != --help ]]; }; then
@@ -28,7 +28,7 @@ if ! crontab -l > "$current_file" 2> "$error_file"; then
     : > "$current_file"
 fi
 
-# Replace old direct key-repair jobs as well as previous Cowrie jobs. Other
+# Replace old direct key-repair jobs and the two previous Cowrie jobs. Other
 # crontab entries, including unrelated class jobs, are preserved verbatim.
 awk '
     /^[[:space:]]*#/ { print; next }
@@ -37,7 +37,6 @@ awk '
 ' "$current_file" > "$new_file"
 
 cat >> "$new_file" <<EOF
-* * * * * /bin/bash "$SCRIPT_DIR/reconcile.sh" >> "$REPO_ROOT/logs/cowrie_reconcile.log" 2>&1 # cowrie-reconcile
 * * * * * /bin/bash "$SCRIPT_DIR/monitor.sh" >> "$REPO_ROOT/logs/cowrie_monitor.log" 2>&1 # cowrie-monitor
 EOF
 
@@ -45,5 +44,5 @@ if [[ "${1:-}" == --dry-run ]]; then
     cat "$new_file"
 else
     crontab "$new_file"
-    echo "Installed Cowrie reconciliation and monitoring jobs for $(id -un)."
+    echo "Installed the Cowrie monitor and reconciler for $(id -un)."
 fi

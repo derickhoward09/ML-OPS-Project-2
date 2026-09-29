@@ -209,6 +209,8 @@ install_redteam_cron() {
         { print }
     ' "$current_file" > "$new_file"
 
+    # Poll every quarter hour so a locked run can retry; run_scheduled_scan
+    # gates full scans to at least three quarter-hour slots (45 minutes) apart.
     printf '*/15 * * * * /bin/bash "%s" --run-scheduled >> "%s/redteam_scan_cron.log" 2>&1 # redteam-scan-cron\n' \
         "$SCRIPT_PATH" "$SCRIPT_DIR" >> "$new_file"
 }

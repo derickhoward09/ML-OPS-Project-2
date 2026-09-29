@@ -7,6 +7,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROXY_SOURCE="$SCRIPT_DIR/delay_proxy.py"
 GROUP_KEY="$HOME/.ssh/mlops/id_ed25519_group_key"
+GROUP_PUBLIC_KEY="$HOME/.ssh/mlops/id_ed25519_group_key.pub"
 TARGET="student-admin@paffenroth-23.dyn.wpi.edu"
 SSH_PORT=23001
 
@@ -16,8 +17,10 @@ Usage: cowrie/deploy.sh [--check|--check-only]
 
 With no arguments, install or repair Cowrie 3.0.15 and the delay proxy on node
 24 only when the desired state is missing or unhealthy. --check reports health
-without modifying the target. Run ssh_key_access.sh first if group-key access
-needs repair. This script never uses the student-admin bootstrap key.
+without modifying the target. Its exit status distinguishes an unhealthy
+deployment (1), unavailable SSH access (2), and a mismatched authorized_keys
+file (3), and unavailable local key material (4). This script never uses the
+student-admin bootstrap key.
 EOF
 }
 
@@ -35,7 +38,11 @@ fi
 
 if [[ ! -s "$GROUP_KEY" || ! -r "$GROUP_KEY" ]]; then
     printf 'ERROR: group SSH key is missing or unreadable: %s\n' "$GROUP_KEY" >&2
-    exit 1
+    exit 4
+fi
+if [[ ! -s "$GROUP_PUBLIC_KEY" || ! -r "$GROUP_PUBLIC_KEY" ]]; then
+    printf 'ERROR: group SSH public key is missing or unreadable: %s\n' "$GROUP_PUBLIC_KEY" >&2
+    exit 4
 fi
 if [[ ! -s "$PROXY_SOURCE" || ! -r "$PROXY_SOURCE" ]]; then
     printf 'ERROR: delay proxy source is missing or unreadable: %s\n' "$PROXY_SOURCE" >&2
@@ -175,10 +182,11 @@ USERDB_HASH="$(sha256_file "$local_stage/userdb.txt")"
 COWRIE_UNIT_HASH="$(sha256_file "$local_stage/cowrie.service")"
 DELAY_UNIT_HASH="$(sha256_file "$local_stage/cowrie-delay.service")"
 PROXY_HASH="$(sha256_file "$local_stage/delay_proxy.py")"
+AUTHORIZED_KEYS_HASH="$(sha256_file "$GROUP_PUBLIC_KEY")"
 
 verify_remote() {
     ssh "${SSH_OPTIONS[@]}" "$TARGET" \
-        "sudo -n bash -s -- '$CFG_HASH' '$USERDB_HASH' '$COWRIE_UNIT_HASH' '$DELAY_UNIT_HASH' '$PROXY_HASH'" \
+        "sudo -n bash -s -- '$CFG_HASH' '$USERDB_HASH' '$COWRIE_UNIT_HASH' '$DELAY_UNIT_HASH' '$PROXY_HASH' '$AUTHORIZED_KEYS_HASH'" \
         <<'REMOTE_CHECK'
 set -Eeuo pipefail
 
@@ -187,7 +195,9 @@ userdb_hash="$2"
 cowrie_unit_hash="$3"
 delay_unit_hash="$4"
 proxy_hash="$5"
+authorized_keys_hash="$6"
 state=/opt/cowrie/honeypot
+student_home="$(getent passwd student-admin 2>/dev/null | awk -F: 'NR == 1 { print $6 }')" || true
 
 unhealthy() {
     printf 'Cowrie unhealthy: %s\n' "$1" >&2
@@ -200,6 +210,11 @@ matches_attrs() {
     [[ -f "$2" ]] && [[ "$(stat -c '%U:%G:%a' "$2")" == "$1" ]]
 }
 
+[[ -n "$student_home" ]] || unhealthy 'student-admin account is missing'
+matches_hash "$authorized_keys_hash" "$student_home/.ssh/authorized_keys" || {
+    printf 'Cowrie unhealthy: authorized_keys does not match the group public key.\n' >&2
+    exit 20
+}
 [[ "${EUID}" == 0 ]] || unhealthy 'passwordless target sudo is unavailable'
 getent passwd cowrie >/dev/null || unhealthy 'cowrie user is missing'
 getent group cowrie >/dev/null || unhealthy 'cowrie group is missing'
@@ -229,12 +244,19 @@ ss -H -ltn | awk '$4 ~ /^(0[.]0[.]0[.]0|[*]):22001$/ { found=1 } END { exit !fou
 REMOTE_CHECK
 }
 
+verify_status=0
 if verify_remote; then
     printf 'Cowrie healthy on node 24; no changes made.\n'
     exit 0
+else
+    verify_status=$?
 fi
 if [[ "$MODE" == check ]]; then
-    exit 1
+    case "$verify_status" in
+        20) exit 3 ;;
+        255) exit 2 ;;
+        *) exit 1 ;;
+    esac
 fi
 
 printf 'Cowrie state is missing or unhealthy; reconciling node 24.\n'

@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
-# Run from the scheduler user's cron. Never needs sudo on the scheduler.
+# Repair Cowrie after monitor.sh records an unhealthy check, or run a full
+# reconciliation manually. Never needs sudo on the scheduler.
 set -Eeuo pipefail
+
+mode="${1:-full}"
+case "$mode" in
+    full|--repair-access|--repair-deploy) ;;
+    *)
+        echo "Usage: $0 [--repair-access|--repair-deploy]" >&2
+        exit 2
+        ;;
+esac
+if (( $# > 1 )); then
+    echo "Usage: $0 [--repair-access|--repair-deploy]" >&2
+    exit 2
+fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
@@ -21,6 +35,20 @@ fi
 log() {
     printf '%s | %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"
 }
+
+if [[ "$mode" == --repair-deploy ]]; then
+    log "Deployment health check failed; starting repair."
+    exec "$SCRIPT_DIR/deploy.sh"
+fi
+
+if [[ "$mode" == --repair-access ]]; then
+    if ! "$SCRIPT_DIR/retry_access.sh"; then
+        log "Access recovery failed; the next monitor run will retry."
+        exit 1
+    fi
+    log "Management access recovered; checking Cowrie deployment."
+    exec "$SCRIPT_DIR/deploy.sh"
+fi
 
 if ! "$SCRIPT_DIR/retry_access.sh"; then
     log "Access recovery failed; Cowrie deployment is deferred."
