@@ -57,6 +57,17 @@ The public `22001` delayed-banner probe has a separate persisted timer. It runs 
 
 The monitor pings the Healthchecks URL after **every completed minute run**, including runs that find node 24 down or start a repair. Thus a target outage produces a Discord target alert while a missing heartbeat means the scheduler monitor stopped running. If the Healthchecks URL is missing or unreachable, the monitor logs the failure and exits nonzero; configure the check before relying on it.
 
+## Cleanup
+
+On the scheduler VM, run these commands from the repository root as the user who installed the cron jobs:
+
+```bash
+bash clean.sh --dry-run
+bash clean.sh
+```
+
+The dry run previews the updated crontab without changing cron or the SSH connection. Cleanup removes active cron entries referencing this checkout, including Cowrie and redteam jobs, and stops its persistent SSH master. It preserves unrelated cron jobs, notification configuration, logs, and state files. The Healthchecks services will stop receiving scheduler pings after cleanup.
+
 ## Verification
 
 1. Run `bash cowrie/reconcile.sh` twice. The first run installs or repairs Cowrie; the second should pass its deployment check without reinstalling. Confirm group-key access on `23001` before and after, using `ssh -i ~/.ssh/mlops/id_ed25519_group_key -p 23001 -o IdentitiesOnly=yes -o BatchMode=yes student-admin@paffenroth-23.dyn.wpi.edu true`.
