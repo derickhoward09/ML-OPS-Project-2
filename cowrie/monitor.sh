@@ -20,6 +20,7 @@ ROUTE_WINDOW_START=20260929120000
 ROUTE_WINDOW_END=20261001120000
 ROUTE_INTERVAL_SECONDS=2700
 DEPLOY_CHECK_TIMEOUT=25s
+MONITOR_JITTER_MAX_SECONDS=20
 
 if (( $# != 0 )); then
     echo "Usage: $0" >&2
@@ -44,6 +45,14 @@ fi
 log() {
     printf '%s | %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" | tee -a "$LOG_FILE"
 }
+
+# Spread the once-a-minute SSH check over a 20-second window. The heartbeat
+# still runs each minute, and this remains well inside its five-minute grace.
+jitter_seconds=$((RANDOM % (MONITOR_JITTER_MAX_SECONDS + 1)))
+if (( jitter_seconds > 0 )); then
+    log "Applying ${jitter_seconds}s startup jitter."
+    sleep "$jitter_seconds"
+fi
 
 discord_url=''
 healthchecks_url=''
