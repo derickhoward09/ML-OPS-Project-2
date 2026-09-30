@@ -36,6 +36,10 @@ for command_name in curl python3 crontab; do
         exit 1
     fi
 done
+if crontab -l 2>/dev/null | grep -Eq '# (cowrie-sharded-monitor|redteam-sharded-scan)([[:space:]]|$)'; then
+    echo "ERROR: deactivate and remove the sharded schedule on all three nodes before selecting a legacy mode." >&2
+    exit 1
+fi
 if [[ -L "$ENV_FILE" || ! -f "$ENV_FILE" || ! -r "$ENV_FILE" ]]; then
     echo "ERROR: $ENV_FILE must be a readable regular file. Configure the notification URLs before initializing." >&2
     exit 1

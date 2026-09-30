@@ -18,11 +18,11 @@ RETRY_WINDOW_SECONDS=1200
 RETRY_COOLDOWN_SECONDS=1800
 
 case "${1:-}" in
-    --check|--recover|--initialize|--stop|--stop-keep-state) mode="$1" ;;
-    *) echo "Usage: $0 [--check|--recover|--initialize|--stop|--stop-keep-state]" >&2; exit 2 ;;
+    --check|--recover|--initialize|--stop|--stop-keep-state|--transport-check|--transport-reconnect) mode="$1" ;;
+    *) echo "Usage: $0 [--check|--recover|--initialize|--stop|--stop-keep-state|--transport-check|--transport-reconnect]" >&2; exit 2 ;;
 esac
 if (( $# != 1 )); then
-    echo "Usage: $0 [--check|--recover|--initialize|--stop|--stop-keep-state]" >&2
+    echo "Usage: $0 [--check|--recover|--initialize|--stop|--stop-keep-state|--transport-check|--transport-reconnect]" >&2
     exit 2
 fi
 
@@ -340,6 +340,16 @@ if [[ "$mode" == --check ]]; then
     check_health
     exit $?
 fi
+if [[ "$mode" == --transport-check ]]; then
+    if ! validate_group_key_pair; then
+        echo "ERROR: local group SSH key material is invalid." >&2
+        exit 4
+    fi
+    if master_alive && remote_alive; then
+        exit 0
+    fi
+    exit 2
+fi
 
 exec 9>"$STATE_DIR/recovery.lock"
 if [[ "$mode" == --stop || "$mode" == --stop-keep-state ]]; then
@@ -356,5 +366,15 @@ if ! flock -n 9; then
         exit 1
     fi
     exit 0
+fi
+if [[ "$mode" == --transport-reconnect ]]; then
+    if master_alive && remote_alive; then
+        exit 0
+    fi
+    if ! allow_reconnect_attempt; then
+        exit 1
+    fi
+    start_group_master
+    exit $?
 fi
 recover
