@@ -1,0 +1,1 @@
+ssh -i keys/id_ed25519_group_key -p 22001 student-admin@paffenroth-23.dyn.wpi.edu

@@ -1,0 +1,1 @@
+ssh -i keys/student-admin_key -p 22001 student-admin@paffenroth-23.dyn.wpi.edu
