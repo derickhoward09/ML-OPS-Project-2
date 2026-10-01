@@ -9,7 +9,6 @@ __pycache__/
 *.log
 
 tmp/
-.sharded-state/
 
 student-admin_key
 student-admin_key.pub

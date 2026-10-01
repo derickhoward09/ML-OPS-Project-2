@@ -61,11 +61,6 @@ if ! crontab -l > "$current_file" 2> "$error_file"; then
     fi
     : > "$current_file"
 fi
-if grep -Eq '# (cowrie-sharded-monitor|redteam-sharded-scan)([[:space:]]|$)' "$current_file"; then
-    echo "ERROR: remove the sharded schedule before installing a legacy mode." >&2
-    exit 1
-fi
-
 # Replace both Cowrie modes, legacy direct repair jobs, and old redteam scan
 # entries. Preserve every unrelated active or commented crontab line.
 awk '

@@ -42,11 +42,6 @@ if ! crontab -l > "$current_file" 2> "$error_file"; then
     had_crontab=false
     : > "$current_file"
 fi
-if grep -Eq '# (cowrie-sharded-monitor|redteam-sharded-scan)([[:space:]]|$)' "$current_file"; then
-    echo "ERROR: deactivate the cluster and use init_sharded.sh remove on this scheduler." >&2
-    exit 1
-fi
-
 # A cron command belongs to this checkout when it references its absolute
 # path. Keep comments, environment assignments, and other projects' jobs,
 # even when those projects use the same script basenames or cron tags.

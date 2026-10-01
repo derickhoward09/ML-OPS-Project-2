@@ -68,69 +68,6 @@ bash clean.sh
 
 The dry run previews the updated crontab without changing cron or the SSH connection. Cleanup removes active cron entries referencing this checkout, including Cowrie and redteam jobs, and stops its persistent SSH master. It preserves unrelated cron jobs, notification configuration, logs, and state files. The Healthchecks services will stop receiving scheduler pings after cleanup.
 
-## Three-scheduler sharded mode
-
-This is an optional mode for scheduler nodes 01, 02, and 03. Node 24 remains the only Cowrie deployment target. The existing `init_minute.sh` and `init_persistent.sh` remain the one-scheduler fallback. All three schedulers need the same version of this repository, a private local `.env`, the group SSH key pair, the student-admin key, Python 3, OpenSSH, GNU `timeout`, and `crontab`.
-
-The active host mapping is node 01 → `ccc-app-p-u60`, node 02 → `ccc-app-p-u61`, and node 03 → `ccc-app-p-u62`. `ccc-app-p-u63` is cold standby slot 04: it gets the code release but has no cron job, SSH master, vote, or scan. Node 24 remains the only deployment target. The Mac coordinates rollout and is not needed at runtime.
-
-The checkout is `/home/akrett/github/ML-OPS-Project-2` on all four hosts. Coordination lives in its ignored `.sharded-state/` directory. This directory must be on one live cross-host filesystem with atomic rename and POSIX file locks. Synced copies or separate Git pulls are insufficient. The three concurrent preflights check visibility, matching code, clock skew, and three rounds of cross-host lock exclusion. A failed preflight prevents activation. Runtime mount identity checks pause repair and alerts if the mount changes or disappears.
-
-NFS mounts also need cross-host visibility of newly created state files. The preflight allows up to 75 seconds for NFS directory lookup caches to reveal each marker, so staging may take several minutes. Runtime votes remain eligible for 150 seconds to cover one cache window, allowed clock skew, and a deep check; verdicts still inspect only the current and prior minute slots. Preflight still requires all three active hosts to prove that their locks exclude one another. If a marker remains invisible after that window or any lock round fails, the mount cannot safely coordinate this scheduler; use a shared mount configured for fresh lookups (for example, `lookupcache=none`) and working cross-host locks. Do not bypass a failed lock test.
-
-On the Mac, use the fully qualified internal hostnames with the `akrett` account. The short `ccc-app-p-u6x` names do not resolve here. `check` is read-only and fails before any cron change if a target is unreachable or maps to the wrong physical host:
-
-```bash
-TARGETS=(--target 01=akrett@ccc-app-p-u60.int.wpi.edu \
-         --target 02=akrett@ccc-app-p-u61.int.wpi.edu \
-         --target 03=akrett@ccc-app-p-u62.int.wpi.edu \
-         --target 04=akrett@ccc-app-p-u63.int.wpi.edu)
-python3 scripts/deploy_sharded_macos.py check "${TARGETS[@]}"
-GENERATION=cs553-cutover-20260930
-python3 scripts/deploy_sharded_macos.py stage "${TARGETS[@]}" --generation "$GENERATION"
-```
-
-`stage` uploads one exact release through u60, verifies each release file digest on u60–u63, registers the physical-host roster, runs the three lock preflights concurrently, and installs dormant schedules on u60–u62. It preserves `.env`, keys, logs, `.git`, and `.sharded-state`. It also starts each scheduler's own SSH master to node 24. Review its output, then cut over within 15 minutes of preflight:
-
-```bash
-python3 scripts/deploy_sharded_macos.py activate "${TARGETS[@]}" --generation "$GENERATION"
-```
-
-`activate` rechecks all four release digests, finds the active legacy cron host, saves and retires its legacy schedule, collects cutover acknowledgements, then activates the generation. If cutover or activation fails, it restores saved cron snapshots. `rollout` runs stage and activate in one invocation after a successful `check`.
-
-For a manual rollout, preview one scheduler's proposed crontab after roster registration and the three-node preflight, before running `prepare` on that scheduler. Replace `NODE_ID` and `GENERATION` with that scheduler's slot and the registered generation. A bare `./init_sharded.sh --dry-run` has no node or generation to preview.
-
-```bash
-./init_sharded.sh prepare --dry-run --node-id "$NODE_ID" \
-  --shared-dir /home/akrett/github/ML-OPS-Project-2/.sharded-state \
-  --generation "$GENERATION"
-```
-
-To promote standby u63 after a scheduler fails, deactivate the current generation from a surviving active host. Assign u63 the failed logical slot in a **new** roster, assign the failed host standby slot 04, and use a new generation. Run a new concurrent preflight on the three reachable active hosts, stage their dormant schedules, retire any legacy schedule, and activate that generation. The failed host's old cron is inert when it returns because its generation no longer matches `active.json`; remove that old cron after it is reachable. For example, if u62 fails, u63 claims slot 03 and u62 becomes standby slot 04:
-
-```bash
-bash init_sharded.sh deactivate --node-id 01 --shared-dir /home/akrett/github/ML-OPS-Project-2/.sharded-state
-bash init_sharded.sh roster --shared-dir /home/akrett/github/ML-OPS-Project-2/.sharded-state --generation promoted-20260930 \
-  --member 01=ccc-app-p-u60 --member 02=ccc-app-p-u61 \
-  --member 03=ccc-app-p-u63 --member 04=ccc-app-p-u62
-# On u60, u61, and u63 concurrently: preflight with IDs 01, 02, and 03.
-# Then prepare and cutover on those three, and activate once.
-```
-
-Each node now keeps its own SSH master to node 24. All three check that connection each minute; the full deployment check rotates among them. A second scheduler confirms failures. Two independent failures permit one locked repair, while two consecutive failed minute rounds trigger a target DOWN alert. When two schedulers have been absent for three minutes, the survivor can act after two local failures. A missing scheduler gets its own Discord coverage alert after two minutes. If shared state or its lock is unavailable, no target repair or target alert runs. The existing Cowrie Healthchecks URL receives one cluster heartbeat per completed minute; it does not identify individual scheduler failures.
-
-The red-team mode runs the same September 29 noon through October 1 noon (America/New_York) window. Node 01 scans nodes 2–9, node 02 scans 10–17, and node 03 scans 18–25. The next node takes over a missing shard after five minutes; the remaining node can take it after eight minutes. A completed 24-port cycle produces one aggregate Healthchecks completion and feeds the existing scheduled Discord summaries. Public port 22001 route probes also rotate across schedulers during the original 45-minute window, with a second scheduler confirming failures.
-
-To return to a single scheduler, deactivate once, remove the sharded schedule and SSH master on **each** of nodes 01–03, and run the desired legacy init script on one scheduler:
-
-```bash
-bash init_sharded.sh deactivate --node-id "$NODE_ID" --shared-dir "$SHARED_DIR"
-bash init_sharded.sh remove --node-id "$NODE_ID"  # run separately on 01, 02, and 03
-bash init_persistent.sh                         # or bash init_minute.sh, on one node
-```
-
-The sharded jobs write local logs and persistent SSH state under `${XDG_STATE_HOME:-$HOME/.local/state}/cowrie-sharded/<node-id>/`. Votes, shard results, locks, and delivery state live in the shared directory. A Discord request that succeeds remotely but times out locally can be retried and produce a duplicate notification.
-
 ## Verification
 
 1. Run `bash cowrie/reconcile.sh` twice. The first run installs or repairs Cowrie; the second should pass its deployment check without reinstalling. Confirm group-key access on `23001` before and after, using `ssh -i ~/.ssh/mlops/id_ed25519_group_key -p 23001 -o IdentitiesOnly=yes -o BatchMode=yes student-admin@paffenroth-23.dyn.wpi.edu true`.
