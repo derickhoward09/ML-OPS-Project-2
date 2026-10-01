@@ -29,7 +29,8 @@ LOG_FILE="$SCRIPT_DIR/redteam_scan.log"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/redteam-scan"
 ENV_FILE="$SCRIPT_DIR/.env"
 REDTEAM_HEALTHCHECKS_KEY="REDTEAM_HEALTHCHECKS_PING_URL"
-NOTIFICATION_STATE_FILE="$CONFIG_DIR/sent_notifications"
+MILESTONE_STATE_FILE="$CONFIG_DIR/logged_milestones"
+LEGACY_MILESTONE_STATE_FILE="$CONFIG_DIR/sent_notifications"
 LAST_SCAN_FILE="$CONFIG_DIR/last_scan"
 SCHEDULE_SLOT_FILE="$CONFIG_DIR/last_scheduled_slot"
 SCHEDULE_LOCK_DIR="$CONFIG_DIR/schedule.lock"
@@ -37,16 +38,12 @@ CRON_SETUP_TMP_DIR=""
 SCHEDULE_LOCK_HELD=false
 
 test_mode=false
-init_discord=false
 init_cron=false
 run_scheduled=false
 for arg in "$@"; do
     case "$arg" in
         -test|--test|-t)
             test_mode=true
-            ;;
-        --init-discord)
-            init_discord=true
             ;;
         --init-cron|-init-cron)
             init_cron=true
@@ -55,26 +52,25 @@ for arg in "$@"; do
             run_scheduled=true
             ;;
         -h|--help)
-            echo "Usage: $0 [--init-discord | --init-cron | -init-cron | --run-scheduled | -test|--test|-t]"
-            echo "  --init-discord  Securely save a Discord webhook for notifications."
+            echo "Usage: $0 [--init-cron | -init-cron | --run-scheduled | -test|--test|-t]"
             echo "  --init-cron     Securely save a Healthchecks URL and install 45-minute scans."
             echo "  --run-scheduled Internal cron entrypoint; do not run directly."
-            echo "  -test            Try TEST_NODE and send a Discord test (node 24 uses both keys on port 23001)."
-            echo "  Full scans check nodes 2-25. Scheduled Discord pushes use America/New_York:"
+            echo "  -test            Try TEST_NODE and log SSH results (node 24 uses both keys on port 23001)."
+            echo "  Full scans check nodes 2-25. Local milestone summaries use America/New_York:"
             echo "    Sep 29, 2026 at 1 PM and 7 PM; Sep 30 at 10 AM;"
             echo "    Oct 1 at 11 AM and noon, with the latest completed scan results."
             exit 0
             ;;
         *)
             echo "ERROR: unknown argument: $arg" >&2
-            echo "Usage: $0 [--init-discord | --init-cron | -init-cron | --run-scheduled | -test|--test|-t]" >&2
+            echo "Usage: $0 [--init-cron | -init-cron | --run-scheduled | -test|--test|-t]" >&2
             exit 2
             ;;
     esac
 done
 
 action_count=0
-for action in "$init_discord" "$init_cron" "$run_scheduled" "$test_mode"; do
+for action in "$init_cron" "$run_scheduled" "$test_mode"; do
     if [[ "$action" == true ]]; then
         ((action_count += 1))
     fi
@@ -104,60 +100,6 @@ fi
 ensure_config_dir() {
     mkdir -p "$CONFIG_DIR"
     chmod 700 "$CONFIG_DIR"
-}
-
-valid_webhook_url() {
-    [[ "$1" =~ ^https://discord(app)?\.com/api/webhooks/[0-9]+/[A-Za-z0-9._-]+$ ]]
-}
-
-initialize_discord() {
-    local webhook="" temp_file=""
-    if [[ ! -t 0 ]]; then
-        echo "ERROR: --init-discord needs an interactive terminal." >&2
-        return 1
-    fi
-
-    printf "Discord webhook URL (input hidden): "
-    IFS= read -r -s webhook || {
-        printf '\n'
-        echo "ERROR: could not read the webhook URL." >&2
-        return 1
-    }
-    printf '\n'
-
-    if ! valid_webhook_url "$webhook"; then
-        unset webhook
-        echo "ERROR: enter a Discord webhook URL from discord.com or discordapp.com." >&2
-        return 1
-    fi
-
-    if [[ -L "$ENV_FILE" || ( -e "$ENV_FILE" && ! -f "$ENV_FILE" ) ]]; then
-        unset webhook
-        echo "ERROR: $ENV_FILE must be a regular file, not a symlink." >&2
-        return 1
-    fi
-
-    if ! temp_file="$(umask 077; mktemp "$SCRIPT_DIR/.env.XXXXXX")"; then
-        unset webhook
-        echo "ERROR: could not create a private .env file beside the script." >&2
-        return 1
-    fi
-
-    if [[ -e "$ENV_FILE" ]] && ! awk 'index($0, "DISCORD_WEBHOOK_URL=") != 1' "$ENV_FILE" > "$temp_file"; then
-        rm -f "$temp_file"
-        unset webhook
-        echo "ERROR: could not preserve the existing .env contents." >&2
-        return 1
-    fi
-    if ! printf 'DISCORD_WEBHOOK_URL=%s\n' "$webhook" >> "$temp_file" || ! chmod 600 "$temp_file" || ! mv -f "$temp_file" "$ENV_FILE"; then
-        rm -f "$temp_file"
-        unset webhook
-        echo "ERROR: could not save the Discord webhook to $ENV_FILE." >&2
-        return 1
-    fi
-
-    unset webhook
-    echo "Discord webhook saved to $ENV_FILE with mode 600."
 }
 
 valid_healthchecks_url() {
@@ -448,69 +390,6 @@ run_scheduled_scan() {
     return "$healthcheck_status"
 }
 
-load_discord_webhook() {
-    local candidate="" line=""
-    if [[ -L "$ENV_FILE" || ! -f "$ENV_FILE" || ! -r "$ENV_FILE" ]]; then
-        return 1
-    fi
-    if ! chmod 600 "$ENV_FILE"; then
-        return 1
-    fi
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        if [[ "$line" == DISCORD_WEBHOOK_URL=* ]]; then
-            candidate="${line#DISCORD_WEBHOOK_URL=}"
-        fi
-    done < "$ENV_FILE"
-    if ! valid_webhook_url "$candidate"; then
-        unset candidate
-        return 1
-    fi
-    DISCORD_WEBHOOK="$candidate"
-    unset candidate
-}
-
-send_discord_message() {
-    local message="$1"
-    local payload http_status
-
-    if ! load_discord_webhook; then
-        echo "ERROR: Discord webhook is missing or invalid. Run $0 --init-discord." >&2
-        return 1
-    fi
-    if ! command -v curl >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
-        echo "ERROR: Discord notifications require curl and python3." >&2
-        unset DISCORD_WEBHOOK
-        return 1
-    fi
-
-    if ! payload="$(python3 -c 'import json, sys; print(json.dumps({"content": sys.argv[1]}))' "$message" 2>/dev/null)"; then
-        echo "ERROR: could not encode the Discord message." >&2
-        unset DISCORD_WEBHOOK
-        return 1
-    fi
-
-    # Read the secret URL through curl's stdin config so it is not exposed in argv.
-    if ! http_status="$(curl --silent --show-error --connect-timeout 8 --max-time 15 --output /dev/null --write-out '%{http_code}' --request POST --header 'Content-Type: application/json' --data "$payload" --config - 2>/dev/null <<EOF
-url = "$DISCORD_WEBHOOK"
-EOF
-)"; then
-        echo "ERROR: Discord webhook request failed." >&2
-        unset DISCORD_WEBHOOK
-        return 1
-    fi
-    unset DISCORD_WEBHOOK
-
-    if [[ "$http_status" != 2?? ]]; then
-        echo "ERROR: Discord returned HTTP status $http_status." >&2
-        return 1
-    fi
-}
-
-if "$init_discord"; then
-    initialize_discord
-    exit $?
-fi
-
 if "$init_cron"; then
     initialize_cron
     exit $?
@@ -578,15 +457,8 @@ store_latest_scan() {
     mv -f "$temp_file" "$LAST_SCAN_FILE"
 }
 
-record_notification_issue() {
-    local event_id="$1" timestamp
-    timestamp="$(TZ="$TIMEZONE" date '+%Y-%m-%d %H:%M:%S %Z')"
-    printf '%s | Discord notification failed for event %s; retrying for up to 10 minutes.\n' \
-        "$timestamp" "$event_id" >> "$LOG_FILE"
-}
-
-send_scheduled_notifications() {
-    local now_epoch event_epoch age event_id event_label scan_time scan_count scan_nodes message timestamp
+log_scheduled_milestones() (
+    local now_epoch event_epoch age event_id event_label scan_time scan_count scan_nodes message timestamp temp_file lock_status event_index state_file
     local event_ids=(202609291300 202609291900 202609301000 202610011100 202610011200)
     local event_times=(202609291300 202609291900 202609301000 202610011100 202610011200)
     local event_labels=(
@@ -600,9 +472,30 @@ send_scheduled_notifications() {
     now_epoch="$(TZ="$TIMEZONE" date '+%s')"
     ensure_config_dir
 
+    # Serialize milestone import/logging independently of the parent cron lock.
+    SCHEDULE_LOCK_DIR="$CONFIG_DIR/milestones.lock"
+    SCHEDULE_LOCK_HELD=false
+    if acquire_scheduled_lock; then
+        :
+    else
+        lock_status=$?
+        (( lock_status == 1 )) && return 0
+        echo "ERROR: could not acquire the milestone log lock." >&2
+        return 1
+    fi
+    temp_file="$(umask 077; mktemp "$CONFIG_DIR/.logged_milestones.XXXXXX")"
+    for state_file in "$MILESTONE_STATE_FILE" "$LEGACY_MILESTONE_STATE_FILE"; do
+        if [[ -f "$state_file" && -r "$state_file" && ! -L "$state_file" ]]; then
+            # Import only known milestones from the retired delivery state.
+            awk '/^(202609291300|202609291900|202609301000|202610011100|202610011200)$/ { print }' "$state_file" >> "$temp_file"
+        fi
+    done
+    sort -u -o "$temp_file" "$temp_file"
+    mv -f -- "$temp_file" "$MILESTONE_STATE_FILE"
+
     for ((event_index = 0; event_index < ${#event_ids[@]}; event_index++)); do
         event_id="${event_ids[$event_index]}"
-        if [[ -r "$NOTIFICATION_STATE_FILE" ]] && grep -Fqx -- "$event_id" "$NOTIFICATION_STATE_FILE"; then
+        if [[ -r "$MILESTONE_STATE_FILE" ]] && grep -Fqx -- "$event_id" "$MILESTONE_STATE_FILE"; then
             continue
         fi
 
@@ -623,23 +516,13 @@ send_scheduled_notifications() {
 
         event_label="${event_labels[$event_index]}"
         message="Redteam timeline: $event_label. Latest full scan at $scan_time: $scan_count/25 groups authenticated (nodes: $scan_nodes)."
-        if ! send_discord_message "$message"; then
-            record_notification_issue "$event_id"
-            continue
-        fi
-
-        (umask 077; printf '%s\n' "$event_id" >> "$NOTIFICATION_STATE_FILE")
         timestamp="$(TZ="$TIMEZONE" date '+%Y-%m-%d %H:%M:%S %Z')"
-        printf '%s | Discord notification sent for event %s.\n' "$timestamp" "$event_id" >> "$LOG_FILE"
+        printf '%s | %s\n' "$timestamp" "$message" >> "$LOG_FILE"
+        (umask 077; printf '%s\n' "$event_id" >> "$MILESTONE_STATE_FILE")
     done
-}
+)
 
 if "$test_mode"; then
-    if ! load_discord_webhook; then
-        echo "ERROR: Discord webhook is missing or invalid. Run $0 --init-discord." >&2
-        exit 1
-    fi
-    unset DISCORD_WEBHOOK
     check_ntp_clock
 fi
 
@@ -654,9 +537,9 @@ if ! "$test_mode"; then
         exit 0
     fi
     if [[ "$now" > "$window_end" || "$now" == "$window_end" ]]; then
-        # The noon deadline push runs outside the scan window and uses the
+        # The noon deadline summary runs outside the scan window and uses the
         # latest result persisted by a scan that completed before noon.
-        send_scheduled_notifications
+        log_scheduled_milestones
         exit 0
     fi
 fi
@@ -678,10 +561,8 @@ if "$test_mode"; then
         fi
     done
     if (( ${#available_test_keys[@]} == 0 )); then
-        if ! send_discord_message "Redteam test notification: node $TEST_NODE SSH test could not run because no configured test key is available."; then
-            echo "ERROR: Discord test notification could not be sent." >&2
-            exit 1
-        fi
+        printf '%s | Test node %s: no configured test key is available.\n' \
+            "$(TZ="$TIMEZONE" date '+%Y-%m-%d %H:%M:%S %Z')" "$TEST_NODE" >> "$LOG_FILE"
         echo "ERROR: no configured test key is available." >&2
         exit 1
     fi
@@ -693,7 +574,7 @@ if "$test_mode"; then
     fi
 else
     if [[ ! -r "$KEY" ]]; then
-        send_scheduled_notifications
+        log_scheduled_milestones
         echo "ERROR: cannot read SSH key: $KEY" >&2
         exit 1
     fi
@@ -800,12 +681,9 @@ if "$test_mode"; then
         test_result="succeeded"
     fi
     test_key_summary="${test_key_results[*]}"
-    if ! send_discord_message "Redteam test notification: node $TEST_NODE SSH login test $test_result. Key results: $test_key_summary."; then
-        echo "ERROR: Discord test notification could not be sent." >&2
-        exit 1
-    fi
-    echo "Discord test notification sent."
+    printf '%s | Test node %s SSH login %s. Key results: %s.\n' \
+        "$timestamp" "$TEST_NODE" "$test_result" "$test_key_summary" >> "$LOG_FILE"
 else
     store_latest_scan "$timestamp" "$success_count" "$success_node_ids_summary"
-    send_scheduled_notifications
+    log_scheduled_milestones
 fi

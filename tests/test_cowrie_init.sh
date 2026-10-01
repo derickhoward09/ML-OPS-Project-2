@@ -50,7 +50,7 @@ config="$(cat)"
 case "$config" in
     *'12345678-1234-1234-1234-123456789abc'*) kind=cowrie-healthchecks; status=200 ;;
     *'87654321-4321-4321-4321-cba987654321'*) kind=redteam-healthchecks; status=200 ;;
-    *'discord.com/api/webhooks/'*) kind=discord; status=204 ;;
+    *'discord'*) echo 'unexpected Discord request' >&2; exit 99 ;;
     *) echo 'unexpected curl config' >&2; exit 99 ;;
 esac
 printf '%s\n' "$kind" >> "$MOCK_EVENTS"
@@ -92,34 +92,36 @@ ENV
 chmod 600 "$FIXTURE_DIR/repo/.env"
 
 bash "$minute_init" > "$FIXTURE_DIR/output"
-[[ "$(cat "$MOCK_EVENTS")" == $'cowrie-healthchecks\nredteam-healthchecks\ndiscord\npersistent-stop\ncrontab-install' ]]
+[[ "$(cat "$MOCK_EVENTS")" == $'cowrie-healthchecks\nredteam-healthchecks\npersistent-stop\ncrontab-install' ]]
 [[ "$(grep -c '# cowrie-monitor' "$MOCK_CRONTAB")" -eq 1 ]]
 [[ "$(grep -c '# redteam-scan-cron' "$MOCK_CRONTAB")" -eq 1 ]]
 grep -q 'unrelated.sh' "$MOCK_CRONTAB"
 
 : > "$MOCK_EVENTS"
+sed '/DISCORD_WEBHOOK_URL=/d' "$FIXTURE_DIR/repo/.env" > "$FIXTURE_DIR/no-webhook"
+mv "$FIXTURE_DIR/no-webhook" "$FIXTURE_DIR/repo/.env"
 bash "$persistent_init" > "$FIXTURE_DIR/output"
-[[ "$(cat "$MOCK_EVENTS")" == $'cowrie-healthchecks\nredteam-healthchecks\ndiscord\npersistent-initialize\ncrontab-install' ]]
+[[ "$(cat "$MOCK_EVENTS")" == $'cowrie-healthchecks\nredteam-healthchecks\npersistent-initialize\ncrontab-install' ]]
 [[ "$(grep -c '# cowrie-persistent-monitor' "$MOCK_CRONTAB")" -eq 1 ]]
 [[ "$(grep -c '# redteam-scan-cron' "$MOCK_CRONTAB")" -eq 1 ]]
 ! grep -q '# cowrie-monitor' "$MOCK_CRONTAB"
 cp "$MOCK_CRONTAB" "$FIXTURE_DIR/before-failure"
 
 : > "$MOCK_EVENTS"
-if MOCK_CURL_FAIL=discord bash "$minute_init" > "$FIXTURE_DIR/output" 2>&1; then
-    echo 'Failed Discord test unexpectedly installed cron.' >&2
+if MOCK_CURL_FAIL=redteam-healthchecks bash "$minute_init" > "$FIXTURE_DIR/output" 2>&1; then
+    echo 'Failed Healthchecks test unexpectedly installed cron.' >&2
     exit 1
 fi
 cmp -s "$MOCK_CRONTAB" "$FIXTURE_DIR/before-failure"
 ! grep -q 'crontab-install' "$MOCK_EVENTS"
 
 : > "$MOCK_EVENTS"
-if MOCK_CURL_FAIL=discord bash "$persistent_init" > "$FIXTURE_DIR/output" 2>&1; then
-    echo 'Failed Discord test unexpectedly started persistent SSH.' >&2
+if MOCK_CURL_FAIL=redteam-healthchecks bash "$persistent_init" > "$FIXTURE_DIR/output" 2>&1; then
+    echo 'Failed Healthchecks test unexpectedly started persistent SSH.' >&2
     exit 1
 fi
 cmp -s "$MOCK_CRONTAB" "$FIXTURE_DIR/before-failure"
-[[ "$(cat "$MOCK_EVENTS")" == $'cowrie-healthchecks\nredteam-healthchecks\ndiscord' ]]
+[[ "$(cat "$MOCK_EVENTS")" == $'cowrie-healthchecks\nredteam-healthchecks' ]]
 
 : > "$MOCK_EVENTS"
 if MOCK_STOP_FAIL=1 bash "$minute_init" > "$FIXTURE_DIR/output" 2>&1; then
@@ -136,7 +138,7 @@ if MOCK_PERSISTENT_FAIL=1 bash "$persistent_init" > "$FIXTURE_DIR/output" 2>&1; 
     exit 1
 fi
 cmp -s "$MOCK_CRONTAB" "$FIXTURE_DIR/before-failure"
-[[ "$(cat "$MOCK_EVENTS")" == $'cowrie-healthchecks\nredteam-healthchecks\ndiscord\npersistent-initialize' ]]
+[[ "$(cat "$MOCK_EVENTS")" == $'cowrie-healthchecks\nredteam-healthchecks\npersistent-initialize' ]]
 
 # A failed switch from minute mode stops the newly started master and keeps
 # the old minute cron, whether initialization or crontab installation failed.
@@ -151,7 +153,7 @@ if MOCK_PERSISTENT_FAIL=1 bash "$persistent_init" > "$FIXTURE_DIR/output" 2>&1; 
 fi
 grep -q 'persistent SSH initialization failed' "$FIXTURE_DIR/output"
 cmp -s "$MOCK_CRONTAB" "$FIXTURE_DIR/minute-before-failure"
-[[ "$(cat "$MOCK_EVENTS")" == $'cowrie-healthchecks\nredteam-healthchecks\ndiscord\npersistent-initialize\npersistent-stop' ]]
+[[ "$(cat "$MOCK_EVENTS")" == $'cowrie-healthchecks\nredteam-healthchecks\npersistent-initialize\npersistent-stop' ]]
 
 : > "$MOCK_EVENTS"
 if MOCK_CRONTAB_INSTALL_FAIL=1 bash "$persistent_init" > "$FIXTURE_DIR/output" 2>&1; then
@@ -160,6 +162,6 @@ if MOCK_CRONTAB_INSTALL_FAIL=1 bash "$persistent_init" > "$FIXTURE_DIR/output" 2
 fi
 grep -q 'persistent cron installation failed' "$FIXTURE_DIR/output"
 cmp -s "$MOCK_CRONTAB" "$FIXTURE_DIR/minute-before-failure"
-[[ "$(cat "$MOCK_EVENTS")" == $'cowrie-healthchecks\nredteam-healthchecks\ndiscord\npersistent-initialize\npersistent-stop' ]]
+[[ "$(cat "$MOCK_EVENTS")" == $'cowrie-healthchecks\nredteam-healthchecks\npersistent-initialize\npersistent-stop' ]]
 
-echo 'Cowrie init scripts: validate and test notifications, start persistence first, and switch cron safely.'
+echo 'Cowrie init scripts: validate and test Healthchecks, start persistence first, and switch cron safely.'

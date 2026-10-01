@@ -76,20 +76,11 @@ class CowrieMonitorTests(unittest.TestCase):
             'if [[ "$*" == *"discord.com/api/webhooks"* || "$*" == *"hc-ping.com"* ]]; then\n'
             '    echo "secret URL appeared in curl arguments" >&2; exit 98\n'
             'fi\n'
-            'if [[ "$config" == *"discord.com"* ]]; then\n'
-            '    if [[ "$*" == *"public port 22001 OUTAGE RECOVERED"* ]]; then kind=route-delayed;\n'
-            '    elif [[ "$*" == *"public port 22001 RECOVERED"* ]]; then kind=route-recovery;\n'
-            '    elif [[ "$*" == *"public port 22001 DOWN"* ]]; then kind=route-failure;\n'
-            '    elif [[ "$*" == *"OUTAGE RECOVERED"* ]]; then kind=discord-delayed;\n'
-            '    elif [[ "$*" == *"RECOVERED"* ]]; then kind=discord-recovery;\n'
-            '    else kind=discord-failure; fi\n'
-            '    printf "%s\\n" "$kind" >> "$MOCK_EVENTS"\n'
-            '    if [[ "${MOCK_DISCORD_FAIL:-0}" == 1 ]]; then printf 503; exit 0; fi\n'
-            '    printf 204\n'
-            'else\n'
-            '    printf "heartbeat\\n" >> "$MOCK_EVENTS"\n'
-            '    printf 200\n'
-            'fi\n',
+            'if [[ "$config" == *"discord"* ]]; then\n'
+            '    printf "unexpected-discord\\n" >> "$MOCK_EVENTS"; exit 99\n'
+            'fi\n'
+            'printf "heartbeat\\n" >> "$MOCK_EVENTS"\n'
+            'printf "%s" "${MOCK_HEALTHCHECKS_STATUS:-200}"\n',
         )
         command(
             "nohup",
@@ -216,10 +207,12 @@ class CowrieMonitorTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
         events = self.events_seen()
-        self.assertEqual(events.count("discord-failure"), 1)
-        self.assertEqual(events.count("discord-recovery"), 1)
+        log = (self.state_dir / "monitor.log").read_text()
+        self.assertEqual(log.count("Cowrie node 24 DOWN:"), 1)
+        self.assertEqual(log.count("Cowrie node 24 RECOVERED:"), 1)
+        self.assertEqual(set(events), {"heartbeat"})
         self.assertEqual(events.count("heartbeat"), 5)
-        self.assertEqual((self.state_dir / "status").read_text(), "0 healthy 0\n")
+        self.assertEqual((self.state_dir / "status").read_text(), "0 healthy\n")
         self.assertEqual(self.count_lines(self.ssh_calls), 5)
         self.wait_for_lines(self.repairs, 3)
         self.assertEqual(self.count_lines(self.repairs), 3)
@@ -239,40 +232,26 @@ class CowrieMonitorTests(unittest.TestCase):
         self.wait_for_lines(self.repairs, 1)
         self.assertIn("--repair-access", self.repairs.read_text())
 
-    def test_webhook_failures_retry_and_single_bad_sample_does_not_recover(self):
-        bad = {"MOCK_SSH_STATUS": "1"}
-        self.assertEqual(self.run_monitor(**bad).returncode, 1)
-        self.assertEqual(self.run_monitor(**bad, MOCK_DISCORD_FAIL="1").returncode, 1)
-        self.assertEqual((self.state_dir / "status").read_text(), "2 healthy 1\n")
-        self.assertEqual(self.run_monitor(**bad).returncode, 1)
-        self.assertEqual((self.state_dir / "status").read_text(), "2 failing 0\n")
+    def test_legacy_pending_management_state_is_migrated_without_delivery(self):
+        for state in ("2 healthy 1\n", "2 healthy\n", "2 failing 0\n"):
+            with self.subTest(state=state):
+                self.state_dir.mkdir(exist_ok=True)
+                (self.state_dir / "status").write_text(state)
+                result = self.run_monitor()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("Cowrie node 24 RECOVERED:", result.stdout)
+                self.assertEqual((self.state_dir / "status").read_text(), "0 healthy\n")
+        self.assertEqual(self.events_seen(), ["heartbeat"] * 3)
 
-        self.assertEqual(self.run_monitor(MOCK_DISCORD_FAIL="1").returncode, 1)
-        self.assertEqual((self.state_dir / "status").read_text(), "0 failing 0\n")
-        self.assertEqual(self.run_monitor(**bad).returncode, 1)
-        self.assertEqual((self.state_dir / "status").read_text(), "1 failing 0\n")
+    def test_no_webhook_needed_and_healthchecks_failure_still_fails(self):
+        Path(self.env["COWRIE_MONITOR_CONFIG"]).write_text(
+            "HEALTHCHECKS_PING_URL=https://hc-ping.com/12345678-1234-1234-1234-123456789abc\n"
+        )
         self.assertEqual(self.run_monitor().returncode, 0)
-        events = self.events_seen()
-        self.assertEqual(events.count("discord-failure"), 2)
-        self.assertEqual(events.count("discord-recovery"), 2)
-        self.assertEqual(events.count("heartbeat"), 6)
-
-    def test_failed_down_alert_is_delivered_as_one_delayed_notice_after_recovery(self):
-        bad = {"MOCK_SSH_STATUS": "1"}
-        self.assertEqual(self.run_monitor(**bad).returncode, 1)
-        self.assertEqual(self.run_monitor(**bad, MOCK_DISCORD_FAIL="1").returncode, 1)
-        self.assertEqual((self.state_dir / "status").read_text(), "2 healthy 1\n")
-
-        self.assertEqual(self.run_monitor(MOCK_DISCORD_FAIL="1").returncode, 1)
-        self.assertEqual((self.state_dir / "status").read_text(), "0 healthy 1\n")
-        self.assertEqual(self.run_monitor().returncode, 0)
-        self.assertEqual((self.state_dir / "status").read_text(), "0 healthy 0\n")
-
-        events = self.events_seen()
-        self.assertEqual(events.count("discord-failure"), 1)
-        self.assertEqual(events.count("discord-delayed"), 2)
-        self.assertEqual(events.count("discord-recovery"), 0)
-        self.assertEqual(events.count("heartbeat"), 4)
+        result = self.run_monitor(MOCK_HEALTHCHECKS_STATUS="503")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Healthchecks heartbeat failed", result.stdout)
+        self.assertEqual(self.events_seen(), ["heartbeat"] * 2)
 
     def test_route_probe_timer_persists_and_alerts_after_two_due_failures(self):
         start = self.epoch(2026, 9, 29, 12)
@@ -291,7 +270,7 @@ class CowrieMonitorTests(unittest.TestCase):
             1,
         )
         self.assertEqual(self.count_lines(self.route_calls), 1)
-        self.assertEqual((self.state_dir / "route-status").read_text(), f"{start} 1 healthy none\n")
+        self.assertEqual((self.state_dir / "route-status").read_text(), f"{start} 1 healthy\n")
 
         self.assertEqual(
             self.run_monitor(
@@ -312,8 +291,8 @@ class CowrieMonitorTests(unittest.TestCase):
             1,
         )
         self.assertEqual(self.count_lines(self.route_calls), 2)
-        self.assertIn("route-failure", self.events_seen())
-        self.assertEqual((self.state_dir / "route-status").read_text(), f"{start + 45 * 60} 2 failing none\n")
+        self.assertIn("public port 22001 DOWN:", (self.state_dir / "monitor.log").read_text())
+        self.assertEqual((self.state_dir / "route-status").read_text(), f"{start + 45 * 60} 2 failing\n")
 
         recovered = self.run_monitor(
             MOCK_NOW_EPOCH=str(start + 90 * 60),
@@ -322,7 +301,8 @@ class CowrieMonitorTests(unittest.TestCase):
         )
         self.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
         self.assertEqual(self.count_lines(self.route_calls), 3)
-        self.assertIn("route-recovery", self.events_seen())
+        self.assertIn("public port 22001 RECOVERED:", recovered.stdout)
+        self.assertEqual(set(self.events_seen()), {"heartbeat"})
 
         end = self.epoch(2026, 10, 1, 12)
         result = self.run_monitor(
@@ -333,30 +313,24 @@ class CowrieMonitorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.count_lines(self.route_calls), 3)
 
-    def test_route_alert_delivery_retries_without_waiting_for_next_probe(self):
+    def test_legacy_route_pending_preserves_timer_without_retries(self):
         start = self.epoch(2026, 9, 29, 12)
-        failed = {"MOCK_ROUTE_RESULT": "early banner"}
-        self.assertEqual(
-            self.run_monitor(MOCK_NOW_EPOCH=str(start), MOCK_NOW_LOCAL="20260929120000", **failed).returncode,
-            1,
+        for pending in ("down", "recovery", "recovered", "none"):
+            with self.subTest(pending=pending):
+                self.state_dir.mkdir(exist_ok=True)
+                (self.state_dir / "route-status").write_text(f"{start} 2 healthy {pending}\n")
+                result = self.run_monitor(
+                    MOCK_NOW_EPOCH=str(start + 60), MOCK_NOW_LOCAL="20260929120100"
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual((self.state_dir / "route-status").read_text(), f"{start} 2 failing\n")
+        self.assertEqual(self.count_lines(self.route_calls), 0)
+        self.assertEqual(self.events_seen(), ["heartbeat"] * 4)
+        recovered = self.run_monitor(
+            MOCK_NOW_EPOCH=str(start + 2700), MOCK_NOW_LOCAL="20260929124500"
         )
-        second = self.run_monitor(
-            MOCK_NOW_EPOCH=str(start + 45 * 60),
-            MOCK_NOW_LOCAL="20260929124500",
-            MOCK_DISCORD_FAIL="1",
-            **failed,
-        )
-        self.assertEqual(second.returncode, 1, second.stdout + second.stderr)
-        self.assertIn(" down\n", (self.state_dir / "route-status").read_text())
-
-        retried = self.run_monitor(
-            MOCK_NOW_EPOCH=str(start + 46 * 60),
-            MOCK_NOW_LOCAL="20260929124600",
-            **failed,
-        )
-        self.assertEqual(retried.returncode, 0, retried.stdout + retried.stderr)
-        self.assertEqual(self.count_lines(self.route_calls), 2)
-        self.assertEqual(self.events_seen().count("route-failure"), 2)
+        self.assertEqual(recovered.returncode, 0)
+        self.assertIn("public port 22001 RECOVERED:", recovered.stdout)
 
     def test_route_probe_rejects_banner_close_and_connect_failure(self):
         start = self.epoch(2026, 9, 29, 12)
@@ -379,7 +353,7 @@ class CowrieMonitorTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.count_lines(self.route_calls), 1)
-        self.assertEqual((self.state_dir / "route-status").read_text(), f"{start} 0 healthy none\n")
+        self.assertEqual((self.state_dir / "route-status").read_text(), f"{start} 0 healthy\n")
 
 
 if __name__ == "__main__":
