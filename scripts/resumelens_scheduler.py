@@ -144,7 +144,11 @@ def test_integrations(values: dict[str, str], token: str) -> None:
         "embeds": [{"title": "ResumeLens setup test", "description": "Discord notification delivery is configured.", "color": 0x5865F2, "footer": {"text": "Setup test • no resource alert"}}],
     }
     try:
-        status = http_request(values["DISCORD_WEBHOOK_URL"], json.dumps(test_embed).encode(), {"Content-Type": "application/json"})
+        status = http_request(values["DISCORD_WEBHOOK_URL"], json.dumps(test_embed).encode(), {
+            "Content-Type": "application/json", "User-Agent": "ResumeLens-VM-Setup/1",
+        })
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"Discord webhook test failed (HTTP {error.code})") from error
     except (OSError, urllib.error.URLError) as error:
         raise RuntimeError(f"Discord webhook test failed ({type(error).__name__})") from error
     if status < 200 or status >= 300:

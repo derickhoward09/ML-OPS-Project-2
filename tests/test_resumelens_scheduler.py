@@ -107,7 +107,22 @@ def test_integration_preflight_tests_all_checks_discord_and_hf_without_echoing_s
     assert len(calls) == 4
     embed = json.loads(calls[-1][1])
     assert embed["embeds"][0]["title"] == "ResumeLens setup test"
+    assert calls[-1][2]["User-Agent"] == "ResumeLens-VM-Setup/1"
     assert token not in capsys.readouterr().out
+
+
+def test_discord_preflight_reports_http_status_without_webhook_secret(monkeypatch):
+    import urllib.error
+
+    def fake_http(url, data=None, headers=None, timeout=8):
+        if data is not None:
+            raise urllib.error.HTTPError(url, 403, "Forbidden", {}, None)
+        return 200
+
+    monkeypatch.setattr(scheduler, "http_request", fake_http)
+    with pytest.raises(RuntimeError, match=r"Discord webhook test failed \(HTTP 403\)") as error:
+        scheduler.test_integrations(valid_values(), "hf_supersecret123456789")
+    assert "secret-token" not in str(error.value)
 
 
 def git(path, *args):
