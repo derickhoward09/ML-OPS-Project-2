@@ -3,15 +3,19 @@
 set -Eeuo pipefail
 
 # The gateway maps public port 23001 to node 24's SSH port 22.
-NODE=24
-PORT=23001
-HOST="paffenroth-23.dyn.wpi.edu"
-REMOTE_USER="student-admin"
+NODE="${RESUMELENS_NODE:-24}"
+PORT="${RESUMELENS_SSH_PORT:-23001}"
+HOST="${RESUMELENS_SSH_HOST:-paffenroth-23.dyn.wpi.edu}"
+REMOTE_USER="${RESUMELENS_SSH_USER:-student-admin}"
+if [[ "$HOST" == *@* ]]; then
+    REMOTE_USER="${HOST%@*}"
+    HOST="${HOST#*@}"
+fi
 
 KEY_DIR="$HOME/.ssh/mlops"
-STUDENT_ADMIN_KEY="$KEY_DIR/student-admin_key"
-GROUP_KEY="$KEY_DIR/id_ed25519_group_key"
-GROUP_PUBLIC_KEY="$KEY_DIR/id_ed25519_group_key.pub"
+STUDENT_ADMIN_KEY="${RESUMELENS_BOOTSTRAP_KEY:-$KEY_DIR/student-admin_key}"
+GROUP_KEY="${RESUMELENS_SSH_KEY:-$KEY_DIR/id_ed25519_group_key}"
+GROUP_PUBLIC_KEY="${RESUMELENS_GROUP_PUBLIC_KEY:-$KEY_DIR/id_ed25519_group_key.pub}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
@@ -45,7 +49,7 @@ if ! mkdir -p "$LOG_DIR"; then
     exit 1
 fi
 
-if ! "$TEST_MODE" && command -v flock >/dev/null 2>&1; then
+if ! "$TEST_MODE" && [[ "${RESUMELENS_ACCESS_LOCK_HELD:-0}" != 1 ]] && command -v flock >/dev/null 2>&1; then
     LOCK_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cowrie-recovery"
     mkdir -p "$LOCK_DIR"
     exec 8>"$LOCK_DIR/access.lock"

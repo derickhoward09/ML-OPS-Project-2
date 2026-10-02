@@ -48,18 +48,24 @@ if [[ ! -x .runtime/bin/llama-server ]] || [[ "$(cat .runtime/revision 2>/dev/nu
 fi
 .runtime/bin/llama-server --version
 .venv/bin/python .deploy/configure_resumelens.py "$APP_DIR"
-sudo systemd-analyze verify .deploy/resumelens-app.service .deploy/resumelens-inference.service
-sudo install -m 644 .deploy/resumelens-app.service .deploy/resumelens-inference.service /etc/systemd/system/
+sudo systemd-analyze verify .deploy/resumelens-app.service .deploy/resumelens-inference.service .deploy/resumelens-monitor.service .deploy/resumelens-vm-heartbeat.service .deploy/resumelens-vm-heartbeat.timer
+sudo install -m 644 .deploy/resumelens-app.service .deploy/resumelens-inference.service .deploy/resumelens-monitor.service .deploy/resumelens-vm-heartbeat.service .deploy/resumelens-vm-heartbeat.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable resumelens-inference resumelens-app
-sudo systemctl restart resumelens-inference resumelens-app
+sudo systemctl enable resumelens-inference resumelens-app resumelens-monitor resumelens-vm-heartbeat.timer
+sudo systemctl restart resumelens-inference resumelens-app resumelens-monitor
+sudo systemctl restart resumelens-vm-heartbeat.timer
 .venv/bin/python - <<'PY'
-import time,httpx
+import json,subprocess,time,httpx
 for _ in range(60):
  try:
   for url in ['http://127.0.0.1:8080/health','http://127.0.0.1:7860/']:
    httpx.get(url,timeout=2).raise_for_status()
-  print('Deployment healthy: UI port 7860; CPU router port 8080');break
- except httpx.HTTPError:time.sleep(1)
+  status=json.load(open('/run/resumelens-monitor/status.json'))
+  if time.time()-float(status['timestamp']) > 5: raise ValueError('resource monitor status is stale')
+  for unit in ['resumelens-app','resumelens-inference','resumelens-monitor','resumelens-vm-heartbeat.timer']:
+   subprocess.run(['systemctl','is-active','--quiet',unit],check=True)
+  print('Deployment healthy: UI and CPU router respond; resource monitor and VM heartbeat timer are active')
+  break
+ except (httpx.HTTPError,OSError,ValueError,subprocess.CalledProcessError):time.sleep(1)
 else:raise SystemExit('Health check failed; inspect journalctl -u resumelens-app -u resumelens-inference')
 PY

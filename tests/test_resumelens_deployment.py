@@ -26,6 +26,12 @@ def test_configuration_preserves_settings_and_protects_secret(root):
  assert '--models-max 1' in (root/'.deploy/resumelens-inference.service').read_text()
  assert 'HF_TOKEN' not in (root/'.deploy/resumelens-inference.service').read_text()
  assert '.venv/bin/python' in (root/'.deploy/resumelens-app.service').read_text()
+ monitor=(root/'.deploy/resumelens-monitor.service').read_text()
+ heartbeat=(root/'.deploy/resumelens-vm-heartbeat.timer').read_text()
+ assert 'resumelens_vm_monitor.py' in monitor
+ assert 'StateDirectory=resumelens-monitor' in monitor
+ assert 'OnUnitActiveSec=60s' in heartbeat
+ assert 'VM_HEALTHCHECKS_PING_URL' in (root/'.deploy/resumelens-vm-heartbeat.service').read_text() or 'monitor.env' in (root/'.deploy/resumelens-vm-heartbeat.service').read_text()
  (root/'.deploy/token').write_text('hf_rotated123')
  module.configure(root)
  assert dotenv_values(root/'.env')['HF_TOKEN']=='hf_rotated123'
@@ -72,8 +78,8 @@ def test_source_branch_check_precedes_network(tmp_path):
     assert result.returncode==1
     assert 'Source must be on local-deploy-main' in result.stderr
 
-@pytest.mark.parametrize('jump', [None, ''])
-def test_deployer_uses_jump_host_and_preserves_host_checks(tmp_path, jump):
+@pytest.mark.parametrize('jump', [None, 'bastion@example.edu'])
+def test_deployer_defaults_to_direct_and_keeps_host_checks_vm_scoped(tmp_path, jump):
     import json, os, subprocess, sys
     source = tmp_path/'app'; source.mkdir(); (source/'src').mkdir()
     for name in ['app.py', 'pyproject.toml', 'uv.lock', '.python-version', 'README.md']:
@@ -81,6 +87,7 @@ def test_deployer_uses_jump_host_and_preserves_host_checks(tmp_path, jump):
     token = tmp_path/'token'; token.write_text('hf_test123')
     stubs = tmp_path/'bin'; stubs.mkdir()
     git = stubs/'git'; git.write_text('#!/bin/sh\necho local-deploy-main\n'); git.chmod(0o755)
+    flock = stubs/'flock'; flock.write_text('#!/bin/sh\nexit 0\n'); flock.chmod(0o755)
     log = tmp_path/'ssh.jsonl'
     ssh = stubs/'ssh'
     ssh.write_text('#!'+sys.executable+'\n'+'''import json, os, sys
@@ -93,7 +100,7 @@ elif 'cat >' in command or 'tar -xzf' in command:
     sys.stdin.buffer.read()
 ''')
     ssh.chmod(0o755)
-    env = dict(os.environ, PATH=str(stubs)+':'+os.environ['PATH'], APP_SOURCE=str(source), TOKEN_FILE=str(token), SSH_TEST_LOG=str(log))
+    env = dict(os.environ, PATH=str(stubs)+':'+os.environ['PATH'], HOME=str(tmp_path), APP_SOURCE=str(source), TOKEN_FILE=str(token), SSH_TEST_LOG=str(log), DISCORD_WEBHOOK_URL='https://discord.com/api/webhooks/123/secret', VM_HEALTHCHECKS_PING_URL='https://hc-ping.com/12345678-1234-1234-1234-123456789abc')
     env.pop('SSH_JUMP', None)
     if jump is not None: env['SSH_JUMP'] = jump
     result = subprocess.run(['bash', str(SCRIPT.with_name('deploy_resumelens.sh'))], env=env, capture_output=True, text=True)
@@ -101,10 +108,11 @@ elif 'cat >' in command or 'tar -xzf' in command:
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     assert len(calls) >= 6
     for args in calls:
-        assert 'StrictHostKeyChecking=yes' in args
+        assert 'StrictHostKeyChecking=accept-new' in args
         assert 'BatchMode=yes' in args
         if jump is None:
-            assert args[args.index('-J')+1] == 'akrett@turing.wpi.edu'
-        else:
             assert '-J' not in args
+        else:
+            assert args[args.index('-J')+1] == jump
     assert 'hf_test123' not in result.stdout+result.stderr+log.read_text()
+    assert 'secret' not in result.stdout+result.stderr+log.read_text()

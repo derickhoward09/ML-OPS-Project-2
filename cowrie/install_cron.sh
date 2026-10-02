@@ -36,6 +36,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 REDTEAM_SCRIPT="$REPO_ROOT/redteam_scan_flag.sh"
+RESUMELENS_SCHEDULER="$REPO_ROOT/scripts/resumelens_scheduler.py"
 
 for command_name in crontab awk mktemp; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
@@ -65,6 +66,7 @@ fi
 # entries. Preserve every unrelated active or commented crontab line.
 awk '
     /# redteam-scan-cron([[:space:]]|$)/ { next }
+    /# resumelens-recovery([[:space:]]|$)/ { next }
     /^[[:space:]]*#/ { print; next }
     /ssh_key_access[.]sh|reconcile_cowrie[.]sh|monitor_cowrie[.]sh|cowrie\/reconcile[.]sh|cowrie\/monitor[.]sh|cowrie\/persistent[.]sh/ { next }
     /redteam_scan_flag[.]sh/ { next }
@@ -73,6 +75,8 @@ awk '
 
 printf '*/15 * * * * /bin/bash "%s" --run-scheduled >> "%s/redteam_scan_cron.log" 2>&1 # redteam-scan-cron\n' \
     "$REDTEAM_SCRIPT" "$REPO_ROOT" >> "$new_file"
+printf '* * * * * /usr/bin/python3 "%s" monitor >> "%s/logs/resumelens-monitor.log" 2>&1 # resumelens-recovery\n' \
+    "$RESUMELENS_SCHEDULER" "$REPO_ROOT" >> "$new_file"
 if [[ "$mode" == persistent ]]; then
     printf '* * * * * /bin/bash "%s/monitor.sh" --persistent >> "%s/logs/cowrie_persistent_monitor.log" 2>&1 # cowrie-persistent-monitor\n' \
         "$SCRIPT_DIR" "$REPO_ROOT" >> "$new_file"
@@ -99,4 +103,4 @@ if ! cmp -s -- "$new_file" "$temp_dir/installed"; then
     echo "ERROR: installed crontab differs from the submitted schedule." >&2
     exit 1
 fi
-echo "Installed $mode Cowrie monitoring and the redteam 45-minute scan schedule for $(id -un)."
+echo "Installed $mode Cowrie monitoring, ResumeLens recovery, and the redteam 45-minute scan schedule for $(id -un)."

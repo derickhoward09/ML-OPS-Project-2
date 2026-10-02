@@ -66,6 +66,53 @@ WantedBy=multi-user.target
     inference = common.replace('[Service]',f'[Service]\nExecStart={root}/.runtime/bin/llama-server --models-preset {root}/.deploy/models.ini --models-max 1 --host 127.0.0.1 --port 8080 --parallel 1 --threads 2 --threads-batch 2 --ctx-size {ctx} --batch-size 128 --ubatch-size 64 --n-gpu-layers 0 --no-context-shift --cache-ram 0')
     (root/'.deploy/resumelens-app.service').write_text(app)
     (root/'.deploy/resumelens-inference.service').write_text(inference)
+    monitor = f'''[Unit]
+Description=ResumeLens CPU and memory monitor
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+User={user}
+WorkingDirectory={root}
+EnvironmentFile={root}/.deploy/monitor.env
+ExecStart={root}/.venv/bin/python {root}/.deploy/resumelens_vm_monitor.py
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=resumelens-monitor
+RuntimeDirectoryMode=0755
+StateDirectory=resumelens-monitor
+StateDirectoryMode=0700
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/run/resumelens-monitor /var/lib/resumelens-monitor
+[Install]
+WantedBy=multi-user.target
+'''
+    heartbeat = f'''[Unit]
+Description=Ping ResumeLens VM Healthchecks.io check
+[Service]
+Type=oneshot
+User={user}
+EnvironmentFile={root}/.deploy/monitor.env
+ExecStart={root}/.venv/bin/python {root}/.deploy/resumelens_vm_heartbeat.py
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+'''
+    timer = '''[Unit]
+Description=ResumeLens VM liveness heartbeat schedule
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+AccuracySec=1s
+Unit=resumelens-vm-heartbeat.service
+[Install]
+WantedBy=timers.target
+'''
+    (root/'.deploy/resumelens-monitor.service').write_text(monitor)
+    (root/'.deploy/resumelens-vm-heartbeat.service').write_text(heartbeat)
+    (root/'.deploy/resumelens-vm-heartbeat.timer').write_text(timer)
 
 if __name__ == '__main__':
     configure(Path(sys.argv[1]).resolve())

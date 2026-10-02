@@ -3,63 +3,74 @@
 The application lives in sibling `cs553-case-study-1` on `local-deploy-main`.
 These scripts are maintained on this repository's `alexander-dev` branch.
 
+## Scheduler setup and automatic recovery
+
+Run `./init.sh` on **linux.wpi.edu**, where the scheduler crontab lives. It prompts for the Cowrie, redteam, and ResumeLens VM Healthchecks URLs; Discord webhook; Hugging Face token; Git checkout path; VM SSH user/port; group and bootstrap private-key paths; group public-key path; and optional jump host. Inputs for secrets and check URLs are hidden. Enter retains an existing value, and `-` clears the optional jump host.
+
+The initializer saves private settings in the case study 2 root `.env` and `.hf.env`, tests the three checks, Discord delivery, and token, installs ordinary minute-mode Cowrie plus the existing redteam schedule and ResumeLens recovery cron, then starts initial deployment. Use `./init.sh --test` to prompt, save, and test without touching cron or the VM. Use `./init.sh --dry-run` to preview scheduler jobs without asking for credentials or accessing the network. It preserves unrelated cron entries.
+
+The app source defaults to `~/cs553-case-study-1` on the scheduler. Setup clones [the app repository](https://github.com/alexander-krett/cs553-case-study-1) using the scheduler user's GitHub SSH access, on **local-deploy-main** only. Before a full redeploy, the recovery worker fetches and fast-forwards that branch. It refuses dirty or diverged checkouts. If GitHub is temporarily unavailable, it can redeploy from the clean, validated local checkout and logs that it may be behind.
+
+A one-minute scheduler check verifies SSH access, required files, enabled and active services, UI/router HTTP health, fresh monitor status, and the VM heartbeat timer. If services alone stop, recovery restarts them and checks for up to two minutes. If installation files or units are missing, or a restart fails, it restores group-key access with the bootstrap key and redeploys. Recovery uses a lock shared with manual deploys; failed full deployments wait five minutes before retrying. The monitor returns promptly while installations run in a separate worker.
+
+For this configured VM, deployment and recovery keep an isolated known-hosts file and automatically replace its entry when the VM's SSH host key changes. This is scoped to the target connection and does not alter global SSH settings. Keep GitHub SSH access and both SSH keys available on the scheduler for unattended rebuilds.
+
 ## Deploy
 
-Create `.hf.env` at this repository root, containing a bare Hugging Face token
-or a single `HF_TOKEN=...` assignment. Keep it private (`chmod 600 .hf.env`).
-Use a token with inference-provider access. It is ignored by Git and is never
-printed. The remote app receives a private `.env`; existing settings survive
-updates. No OAuth, public share link, or UI login is configured.
+`init.sh` runs `scripts/deploy_resumelens.sh` automatically. It can also be invoked directly by the recovery worker. The script expects the app checkout on `local-deploy-main`, a token file, Discord webhook, and the separate VM Healthchecks URL.
 
-Run `./scripts/deploy_resumelens.sh`. Defaults:
+Defaults:
 
-- SSH: `student-admin@paffenroth-23.dyn.wpi.edu`, port `23001`.
-- Key: `~/.ssh/mlops/id_ed25519_group_key`; known host verification is required.
-- Jump host: `akrett@turing.wpi.edu`, authenticated using your existing SSH configuration.
-- Source: sibling case study 1 checkout; remote app: `~/resumelens`.
+- SSH: `student-admin@paffenroth-23.dyn.wpi.edu`, port `23001`, using direct SSH.
+- Key: `~/.ssh/mlops/id_ed25519_group_key`.
+- Jump host: none. Set `SSH_JUMP` to use a jump host.
+- Source: scheduler-managed app checkout; remote app: `~/resumelens`.
 - UI: `0.0.0.0:7860`; CPU router: `127.0.0.1:8080`.
 
-Override `APP_SOURCE`, `TOKEN_FILE`, `SSH_HOST`, `SSH_PORT`, `SSH_JUMP`, and `SSH_KEY` as
-needed. Set `SSH_JUMP=` to explicitly disable the jump host for another target. Set `TOKEN_FILE` to case study 1's root `hf-token` if preferred. Source
-files are transferred directly, so a GitHub push is unnecessary. Existing app
-files are overlaid; virtual environments, secrets, model caches, and unrelated
-services are preserved. The script refuses occupied ports owned by other
-processes. It does not change firewall, proxy, Cowrie, or SSH configuration.
-
 uv 0.11.16 provisions Python 3.11 and installs exactly the committed lockfile
-with `uv sync --locked --no-dev`. Restarts execute `.venv/bin/python` directly.
-The CPU runtime and model revisions are fixed in the provisioning scripts;
-repeat deployments reuse the runtime, model downloads, and uv cache. Cold deployment uses the checksum-verified official Ubuntu x64 CPU binary
-(build b11324). If that binary fails its compatibility check, the fallback
-build uses one compilation job with GPU backends disabled.
+with `uv sync --locked --no-dev`. The CPU runtime and model revisions are fixed
+in the provisioning scripts. Repeat deployments reuse the runtime, model
+downloads, and uv cache. Cold deployment uses the checksum-verified official
+Ubuntu x64 CPU binary (build b11324). If that binary fails its compatibility
+check, the fallback build uses one compilation job with GPU backends disabled.
 
 ## Operation (on the VM)
 
 ```bash
-sudo systemctl status resumelens-app resumelens-inference
-sudo journalctl -u resumelens-app -u resumelens-inference -n 100
-sudo systemctl restart resumelens-inference resumelens-app
+sudo systemctl status resumelens-app resumelens-inference resumelens-monitor resumelens-vm-heartbeat.timer
+sudo journalctl -u resumelens-app -u resumelens-inference -u resumelens-monitor -u resumelens-vm-heartbeat.service -n 100
+sudo systemctl restart resumelens-inference resumelens-app resumelens-monitor
 ```
 
-Rerun deployment to update code or rotate the token. Configure timeout and
-context in `~/resumelens/.env`; context must stay between 512 and 4096 and the
-local model IDs must match the generated runtime presets. Rerun deployment
-after context changes. Default context is 4096, response budget 2048, two
+After publishing a change to `local-deploy-main`, run
+`python3 scripts/resumelens_scheduler.py deploy` on linux.wpi.edu to fetch the
+branch and force a locked deployment, or run `./init.sh` to rotate credentials
+and retest integrations. Configure timeout and context in
+`~/resumelens/.env`; context must stay between 512 and 4096 and the local
+model IDs must match the generated runtime presets. Redeploy after context
+changes. Default context is 4096, response budget 2048, two
 threads, one loaded model, one request at a time, and eight queued requests.
 
 To uninstall services (app files are kept):
 
 ```bash
-sudo systemctl disable --now resumelens-app resumelens-inference
-sudo rm /etc/systemd/system/resumelens-app.service /etc/systemd/system/resumelens-inference.service
+sudo systemctl disable --now resumelens-vm-heartbeat.timer resumelens-vm-heartbeat.service resumelens-monitor resumelens-app resumelens-inference
+sudo rm /etc/systemd/system/resumelens-app.service /etc/systemd/system/resumelens-inference.service /etc/systemd/system/resumelens-monitor.service /etc/systemd/system/resumelens-vm-heartbeat.service /etc/systemd/system/resumelens-vm-heartbeat.timer
 sudo systemctl daemon-reload
 ```
 
+The VM monitor measures CPU from `/proc/stat` aggregate counter deltas and RAM as `(MemTotal - MemAvailable) / MemTotal`, excluding swap. Either resource above 80% for more than five seconds triggers one amber Discord embed and a ResumeLens near-capacity warning; reviews remain available. The monitor clears the warning and sends one green recovery embed when both CPU and RAM remain below 70% for ten seconds. It publishes status at `/run/resumelens-monitor/status.json`; current alerts and retry state persist under `/var/lib/resumelens-monitor`.
+
+The VM's own `resumelens-vm-heartbeat.timer` pings the dedicated Healthchecks check every 60 seconds, beginning 30 seconds after boot. Set that check's period to one minute and its grace to two minutes. The Cowrie and redteam check URLs remain separate.
+
 ## Verification
 
-Run app tests using `uv run --locked python -m pytest -q` in case study 1. Run deployment
-unit tests using that environment's Python against
-`tests/test_resumelens_deployment.py` (requires pytest and app dependencies).
+Run app tests in case study 1 with `uv run --locked python -m pytest -q`. Run
+case study 2 tests from its repository root with
+`uv run --project ../cs553-case-study-1 --locked python -m pytest -q tests`;
+the Cowrie delay-proxy tests need permission to bind loopback TCP sockets.
+Run the shell checks with `bash tests/test_cowrie_init.sh`,
+`bash tests/test_cowrie_install_cron.sh`, and `bash tests/test_cleanup.sh`.
 
 Copy `scripts/verify_resumelens.py` to the VM and run it with
 `~/resumelens/.venv/bin/python verify_resumelens.py ~/resumelens`. It exercises

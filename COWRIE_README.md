@@ -16,49 +16,58 @@ The legacy [`red_team_v1.sh`](rcpaffenroth/red_team_v1.sh) scans `22001` through
 
 The previous VM helper scripts remain under [`old_scripts/`](old_scripts/) and are not part of this Cowrie scheduler. Several still use port `22001` for SSH and would now connect to the decoy, so do not use them for VM access. The active scan's NTP helper is [`ntp_clock_check.py`](ntp_clock_check.py) beside `redteam_scan_flag.sh`.
 
-## Scheduler configuration
+## Unified scheduler and ResumeLens setup
 
-1. Put the group private/public key at `~/.ssh/mlops/id_ed25519_group_key{,.pub}` on the scheduler. Keep `student-admin_key` there only for [`ssh_key_access.sh`](scripts/ssh_key_access.sh) to restore the authorized group public key after a rebuild. Healthy deployment and monitoring use the group private key on public `23001`; recovery can use the student key when group-key authentication is rejected.
-2. Make sure the scheduler user has `bash`, OpenSSH, `curl`, Python 3, GNU `timeout`, and `flock`. Ubuntu 22.04 provides these through its usual packages; install missing packages as an administrator if needed. The target needs Python 3, `venv`, and passwordless `sudo -n` for `student-admin`.
-3. Keep the repo-root `.env` private (mode `600`). Cowrie uses `HEALTHCHECKS_PING_URL`; redteam has a separate Healthchecks check and stores its URL as `REDTEAM_HEALTHCHECKS_PING_URL` when its cron is initialized.
+Run `./init.sh` on **linux.wpi.edu**, using the account that owns the scheduler crontab. It securely prompts for the Cowrie, redteam, and ResumeLens VM Healthchecks URLs; the Discord webhook; the Hugging Face token; the ResumeLens Git checkout; and the VM SSH user, port, private keys, and optional jump host. Secret and URL inputs are hidden. Press Enter to keep saved values; type `-` for the optional jump host to select direct SSH.
 
-   ```dotenv
-   HEALTHCHECKS_PING_URL=https://hc-ping.com/REPLACE_WITH_COWRIE_CHECK_UUID
-   REDTEAM_HEALTHCHECKS_PING_URL=https://hc-ping.com/REPLACE_WITH_REDTEAM_CHECK_UUID
-   ```
+Configuration is saved atomically with mode 0600 in the ignored root `.env` and `.hf.env`. Values are parsed as data, never sourced by shell. Do not commit either file. The managed application checkout defaults to `~/cs553-case-study-1`; it is cloned through the scheduler's GitHub SSH access on **local-deploy-main**. Initial setup checks integrations, installs the cron jobs, and starts deployment. The deployment worker fetches and fast-forwards that branch before a full redeploy. Dirty or diverged checkouts are left alone and reported.
 
-   Run `chmod 600 .env` after editing it. Keep the real URLs out of Git and command arguments. The monitor reads the file as data and never executes it.
+```bash
+./init.sh --dry-run # Preview cron jobs; no prompts, network calls, or writes
+./init.sh --test    # Prompt/save settings and test integrations; no cron or deployment
+./init.sh           # Configure, test, install cron, and start deployment
+crontab -l
+```
 
-4. In Healthchecks.io, set **Cowrie Deploy & SSH** to a **1-minute** period with a **5-minute** grace period, and connect its Discord integration. This heartbeat reports whether the scheduler monitor ran, even when node 24 is down. A missed heartbeat covers a dead scheduler, disabled cron, or a monitor that cannot complete.
-5. Configure redteam's independent Healthchecks URL if `REDTEAM_HEALTHCHECKS_PING_URL` is missing. The command securely prompts for the URL and installs the existing redteam schedule. Set **RedTeam Cron** to a **45-minute** period with a **2-hour** grace period. The cron entry runs every 15 minutes, while the script gates full scans to at least 45 minutes apart and to the September 29–October 1 scan window.
+The initializer tests all three Healthchecks ping URLs, posts a labeled test embed to Discord, and validates the Hugging Face token. A successful setup sends the test embed to the configured team channel.
 
-   ```bash
-   ./redteam_scan_flag.sh --init-cron
-   crontab -l
-   ```
+The crontab keeps Cowrie's ordinary minute monitor and the existing redteam schedule, and adds a one-minute ResumeLens recovery check. Persistent Cowrie monitoring can still be managed with its existing lower-level tools, but the unified initializer selects ordinary minute mode and stops an old persistent SSH master. Unrelated cron jobs are preserved. `./clean.sh --dry-run` previews removal of jobs owned by this checkout; `./clean.sh` removes them and stops Cowrie's persistent SSH master.
 
-6. Choose one Cowrie mode. Run its dry run to preview the resulting crontab, then run the init script. Each script validates the two `.env` Healthchecks URLs and sends test pings to both Healthchecks checks, installs exactly one Cowrie cron entry, and keeps redteam's current 45-minute schedule. Neither init script starts a redteam scan. After the Healthchecks tests, the persistent init runs `cowrie/persistent.sh --initialize` to establish and test the SSH master before changing the crontab. If that step or cron installation fails while switching from minute mode, it closes the new master. The minute init closes an existing persistent master before switching cron. Failed preflight checks leave the existing crontab in place.
+### VM recovery and resource alerts
 
-   ```bash
-   bash init_minute.sh --dry-run
-   bash init_minute.sh
-   # Or select persistent mode instead:
-   bash init_persistent.sh --dry-run
-   bash init_persistent.sh
-   crontab -l
-   ```
+The scheduler checks the configured application VM every minute. When the VM cannot be reached, the next check retries. When files or units are missing, recovery first restores group-key SSH access with the configured bootstrap key, refreshes the app branch if GitHub is reachable, then runs `scripts/deploy_resumelens.sh`. If services alone are stopped, it restarts them and allows two minutes for health checks before a full redeploy. A failed full deploy enters a five-minute retry cooldown; the monitor and recovery worker run separately so deployment cannot delay Cowrie heartbeats.
 
-   Switch modes by running the other init script. Both preserve unrelated cron entries and replace old Cowrie jobs. The persistent checker makes jittered reconnection attempts once a minute for 20 minutes after a lost connection, then observes a 30-minute cooldown before another retry window. Heartbeats and local health logs continue during the cooldown. Redteam's full scan still makes 24 fresh SSH attempts, which can independently trigger the firewall.
+The VM's isolated SSH known-hosts file is under `~/.local/state/resumelens-recovery/known_hosts`. If the configured VM's host key changes after a rebuild, the recovery tools replace that VM's isolated pin and reconnect. They do not change global SSH settings. Keep the scheduler's group and bootstrap keys private. The scheduler must retain GitHub SSH access to pull the app repository.
 
-`cowrie/monitor.sh` is the once-a-minute coordinator in regular mode; `cowrie/monitor.sh --persistent` selects the maintained SSH connection. Each run waits a random 0–20 seconds before checking, so successive runs are usually 40–80 seconds apart while remaining within the Healthchecks grace period. Monitor log entries use Boston time (`America/New_York`) in `YYYY-MM-DD HH:MM:SS EDT/EST` format. In regular mode, each healthy check opens one authenticated SSH session on `23001` to validate the group key in `authorized_keys`, the Cowrie deployment, both systemd services, and their listeners. It then updates the monitor state and pings Healthchecks. When access or deployment is unhealthy, it starts the corresponding locked repair in the background so a slow repair cannot hold up the next heartbeat. Access recovery makes one bounded TCP probe before trying the group and bootstrap keys; subsequent repair work opens additional SSH sessions only as needed.
+The deployment enables these VM services:
 
-The public `22001` delayed-banner probe has a separate persisted timer. It runs immediately on the first monitor minute inside the half-open window **September 29, 2026 noon to October 1, 2026 noon, America/New_York**, then when at least **45 minutes** have passed since its previous probe. It does not probe outside that window. Two consecutive failures record a DOWN transition in the local log; a subsequent passing probe records recovery. Every due route probe also logs its result. Route state, monitor state, and logs are under `${XDG_STATE_HOME:-$HOME/.local/state}/cowrie-monitor/`; cron output is also written to `logs/cowrie_monitor.log` and repair output to `logs/cowrie_reconcile.log`.
+- `resumelens-app` and `resumelens-inference` for the UI and CPU inference.
+- `resumelens-monitor` for CPU and RAM sampling and Discord notifications.
+- `resumelens-vm-heartbeat.timer` for a separate Healthchecks ping every 60 seconds, starting 30 seconds after boot.
 
-The monitor pings the Healthchecks URL after **every completed minute run**, including runs that find node 24 down or start a repair. Thus a target outage is recorded in local logs while a missing heartbeat means the scheduler monitor stopped running. If the Healthchecks URL is missing or unreachable, the monitor logs the failure and exits nonzero; configure the check before relying on it.
+The VM monitor reads aggregate CPU counters from `/proc/stat` and calculates CPU use over one-second counter differences across the VM's allocated CPUs. It calculates RAM use as `(MemTotal - MemAvailable) / MemTotal`; swap is excluded. **Either CPU or RAM above 80% for more than five seconds** triggers one amber Discord embed and a near-capacity banner in ResumeLens. The app continues accepting reviews. The banner refreshes every two seconds and reports current CPU and RAM.
 
-Redteam milestone summaries are appended to `redteam_scan.log` beside the script at September 29, 2026 1 PM and 7 PM, September 30 10 AM, and October 1 11 AM and noon (`America/New_York`). A run within ten minutes of each milestone logs the latest completed scan summary once. Milestone IDs are stored in `${XDG_CONFIG_HOME:-$HOME/.config}/redteam-scan/logged_milestones`; IDs from the legacy `sent_notifications` file are imported to prevent duplicates. Test mode logs SSH key results and retains its NTP check without requiring `.env`.
+The monitor clears the banner and sends one green recovery embed after **both CPU and RAM remain below 70% for ten seconds**. It records each alert episode and pending delivery so monitor restarts do not silently drop an alert or repeat an already delivered alert. Network retries and rate limits do not stop resource sampling.
 
-Scripts no longer send Discord messages, validate webhooks, or support `--init-discord`. Existing webhook entries in `.env` are ignored. Healthchecks' separately configured Discord integration remains enabled. Legacy monitor state is read using its failure counters and route timestamp, then rewritten without delivery-pending fields. Log locations and cron commands remain unchanged; updating the scripts requires no cron reinstall.
+Discord alerts include hostname, CPU and RAM percentages, triggering resource, threshold and duration, UTC timestamp, and recovery duration. They disable mentions and do not include webhook credentials or resume content. The VM Healthchecks URL is separate from the Cowrie and redteam checks; set its period to one minute with a two-minute grace period. Those pings originate on the application VM, so a dead VM stops heartbeats even while the scheduler is up.
+
+Useful VM commands:
+
+```bash
+sudo systemctl status resumelens-app resumelens-inference resumelens-monitor resumelens-vm-heartbeat.timer
+sudo journalctl -u resumelens-monitor -u resumelens-vm-heartbeat.service -n 100
+cat /run/resumelens-monitor/status.json
+```
+
+To demonstrate the alert path, create a temporary systemd override with `sudo systemctl edit resumelens-monitor`:
+
+```ini
+[Service]
+Environment=RESUMELENS_HIGH_PERCENT=1
+Environment=RESUMELENS_HIGH_SECONDS=5
+```
+
+Reload and restart the monitor, then verify the amber alert and banner. Remove only this temporary override with `sudo rm /etc/systemd/system/resumelens-monitor.service.d/override.conf`, reload systemd, restart the monitor, and let CPU and RAM remain below 70% for ten seconds to verify the green recovery alert and cleared banner. Restore production thresholds (**80% / more than five seconds**, recovery **below 70% for ten seconds**) after the demonstration.
 
 ## Cleanup
 
@@ -69,7 +78,7 @@ bash clean.sh --dry-run
 bash clean.sh
 ```
 
-The dry run previews the updated crontab without changing cron or the SSH connection. Cleanup removes active cron entries referencing this checkout, including Cowrie and redteam jobs, and stops its persistent SSH master. It preserves unrelated cron jobs, Healthchecks configuration, logs, and state files. The Healthchecks services will stop receiving scheduler pings after cleanup.
+The dry run previews the updated crontab without changing cron or the SSH connection. Cleanup removes active cron entries referencing this checkout, including Cowrie and redteam jobs, and stops its persistent SSH master. It preserves unrelated cron jobs, Healthchecks configuration, logs, and state files. Cowrie and redteam scheduler pings stop after cleanup. The ResumeLens VM heartbeat continues until its VM systemd timer is disabled.
 
 ## Verification
 
