@@ -290,8 +290,10 @@ def validate_app_source(path: Path) -> None:
     if not app_source.is_file():
         raise RuntimeError("APP_SOURCE is missing app.py")
     text = app_source.read_text()
-    if "resource_capacity_status" not in text or "gr.Timer" not in text:
-        raise RuntimeError("publish the ResumeLens capacity banner changes to local-deploy-main before setup or recovery")
+    try:
+        compile(text, str(app_source), "exec")
+    except SyntaxError as error:
+        raise RuntimeError("APP_SOURCE app.py contains invalid Python syntax") from error
 
 
 def desired_crontab() -> str:
@@ -436,7 +438,7 @@ def deploy(values: dict[str, str], token_file: Path) -> bool:
     environment.update({
         "APP_SOURCE": str(source), "TOKEN_FILE": str(token_file),
         "SSH_HOST": values["SSH_HOST"], "SSH_PORT": values["SSH_PORT"],
-        "SSH_KEY": values["SSH_KEY"], "SSH_JUMP": values.get("SSH_JUMP", ""),
+        "SSH_KEY": values["SSH_KEY"], "SSH_JUMP": values.get("SSH_JUMP") or "turing.wpi.edu",
         "DISCORD_WEBHOOK_URL": values["DISCORD_WEBHOOK_URL"],
         "VM_HEALTHCHECKS_PING_URL": values["VM_HEALTHCHECKS_PING_URL"],
         "RESUMELENS_DEPLOY_LOCK_HELD": "1",

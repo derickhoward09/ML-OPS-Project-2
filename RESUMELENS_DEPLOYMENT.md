@@ -63,7 +63,7 @@ sudo rm /etc/systemd/system/resumelens-app.service /etc/systemd/system/resumelen
 sudo systemctl daemon-reload
 ```
 
-The VM monitor measures CPU from `/proc/stat` aggregate counter deltas and RAM as `(MemTotal - MemAvailable) / MemTotal`, excluding swap. Either resource above 80% for more than five seconds triggers one amber Discord embed and a ResumeLens near-capacity warning; reviews remain available. The monitor clears the warning and sends one green recovery embed when both CPU and RAM remain below 70% for ten seconds. It publishes status at `/run/resumelens-monitor/status.json`; current alerts and retry state persist under `/var/lib/resumelens-monitor`.
+The VM monitor measures CPU from `/proc/stat` aggregate counter deltas and RAM as `(MemTotal - MemAvailable) / MemTotal`, excluding swap. Either resource above 80% for more than five seconds triggers one amber Discord embed; reviews remain available. The Gradio UI does not display resource status. The monitor clears the warning and sends one green recovery embed when both CPU and RAM remain below 70% for ten seconds. It publishes status at `/run/resumelens-monitor/status.json`; current alerts and retry state persist under `/var/lib/resumelens-monitor`.
 
 The VM's own `resumelens-vm-heartbeat.timer` pings the dedicated Healthchecks check every 60 seconds, beginning 30 seconds after boot. Set that check's period to one minute and its grace to two minutes. The Cowrie and redteam check URLs remain separate.
 

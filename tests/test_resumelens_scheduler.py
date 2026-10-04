@@ -209,3 +209,14 @@ def test_cron_has_no_credentials_and_uses_once_per_minute_schedule():
     assert line.startswith("* * * * *")
     assert "resumelens_scheduler.py\" monitor" in line
     assert "DISCORD" not in line and "HEALTHCHECKS" not in line and "HF_TOKEN" not in line
+
+
+def test_source_validation_accepts_app_without_capacity_banner(tmp_path):
+    (tmp_path / "app.py").write_text("import gradio as gr\nwith gr.Blocks() as demo:\n    gr.Markdown('ResumeLens')\n")
+    scheduler.validate_app_source(tmp_path)
+
+
+def test_source_validation_rejects_invalid_python(tmp_path):
+    (tmp_path / "app.py").write_text("def broken(")
+    with pytest.raises(RuntimeError, match="invalid Python syntax"):
+        scheduler.validate_app_source(tmp_path)
