@@ -88,11 +88,11 @@ class RecoveryPriorityTests(unittest.TestCase):
             events = root / "events"
             env = dict(os.environ, PATH=str(commands) + os.pathsep + os.environ["PATH"],
                        XDG_STATE_HOME=str(root / "state"), EVENTS=str(events))
-            for status in (2, 3, 4):
+            for status in (2, 3, 4, 5, 7, 99, 124):
                 events.write_text("")
                 result = subprocess.run(["bash", str(cowrie / "reconcile.sh")],
                                         env=dict(env, CHECK_STATUS=str(status)), capture_output=True, text=True, timeout=10)
-                self.assertEqual(result.returncode, status)
+                self.assertEqual(result.returncode, status if status in (2, 3, 4, 5, 7) else 7)
                 self.assertEqual(events.read_text().splitlines(), ["--check"])
                 if status == 2:
                     self.assertIn("Cowrie health unknown; management SSH unavailable", result.stdout)

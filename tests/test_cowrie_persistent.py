@@ -19,7 +19,7 @@ class PersistentConnectionTests(unittest.TestCase):
         self.repo = self.root / "repo"
         self.cowrie = self.repo / "cowrie"
         self.cowrie.mkdir(parents=True)
-        for name in ("persistent.sh", "deploy.sh", "retry_access.sh", "delay_proxy.py"):
+        for name in ("persistent.sh", "deploy.sh", "retry_access.sh", "delay_proxy.py", "remote_recovery.sh"):
             shutil.copy2(REPO_ROOT / "cowrie" / name, self.cowrie / name)
         (self.repo / "scripts").mkdir()
         shutil.copy2(REPO_ROOT / "scripts" / "ssh_key_access.sh", self.repo / "scripts" / "ssh_key_access.sh")
@@ -140,7 +140,7 @@ if [[ -n "$control" ]]; then
                 ;;
             0) exit 0 ;;
             20) echo 'Cowrie unhealthy: authorized_keys differs' >&2; exit 20 ;;
-            *) echo 'Cowrie unhealthy: service inactive' >&2; exit 1 ;;
+            *) echo 'Cowrie check result' >&2; exit "${FAKE_DEPLOY_STATUS}" ;;
         esac
     fi
     if [[ "$command_arg" == 'cat "$HOME/.ssh/authorized_keys"' ]]; then
@@ -167,7 +167,11 @@ else
 fi
 if [[ "$command_arg" == sudo\ -n\ bash\ -s* ]]; then
     printf 'DEPLOY_CHECK\n' >> "$FAKE_SSH_EVENTS"
-    cat >/dev/null
+    remote_script="$(cat)"
+    if [[ "$remote_script" == *$'\nrecover_runtime "$@"'* ]]; then
+        printf 'SERVICE_RECOVERY\n' >> "$FAKE_SSH_EVENTS"
+        exit "${FAKE_RUNTIME_RECOVERY_STATUS:-5}"
+    fi
     exit "${FAKE_DIRECT_CHECK_STATUS:-0}"
 fi
 if [[ "$command_arg" == 'sudo -n bash -c true' ]]; then
@@ -286,7 +290,7 @@ esac
                 self.assert_status(0, "--stop")
 
     def test_deploy_only_installs_after_confirmed_unhealthy_check(self):
-        for remote_status, expected, installs in ((255, 2, False), (20, 3, False), (99, 1, False), (1, 99, True)):
+        for remote_status, expected, installs in ((255, 2, False), (20, 3, False), (99, 7, False), (5, 5, False), (7, 7, False), (124, 7, False), (1, 99, True)):
             with self.subTest(remote_status=remote_status):
                 self.events.write_text("")
                 result = subprocess.run(
@@ -298,6 +302,29 @@ esac
                 self.assertEqual("INSTALL_STARTED" in self.seen(), installs)
                 if remote_status == 255:
                     self.assertIn("Cowrie health unknown; management SSH unavailable", result.stderr)
+
+    def test_pending_and_inconclusive_results_never_repair_or_reconnect(self):
+        self.assert_status(0, "--initialize")
+        for status in (5, 7, 99, 124):
+            with self.subTest(status=status):
+                self.events.write_text("")
+                expected = 5 if status == 5 else 7
+                self.assert_status(expected, "--check", FAKE_DEPLOY_STATUS=str(status))
+                self.assert_status(expected, "--recover", FAKE_DEPLOY_STATUS=str(status))
+                self.assertFalse(any(event.startswith("DIRECT_") or event in ("MASTER_START", "INSTALL_STARTED") for event in self.seen()))
+
+    def test_runtime_failure_uses_targeted_recovery_before_install(self):
+        for recovery_status, expected, installs in ((0, 0, False), (5, 5, False), (6, 6, False), (7, 7, False), (1, 99, True)):
+            with self.subTest(recovery_status=recovery_status):
+                self.events.write_text("")
+                result = subprocess.run(
+                    ["bash", str(self.cowrie / "deploy.sh")],
+                    env=dict(self.env, FAKE_DIRECT_CHECK_STATUS="6", FAKE_RUNTIME_RECOVERY_STATUS=str(recovery_status)),
+                    text=True, capture_output=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                self.assertIn("SERVICE_RECOVERY", self.seen())
+                self.assertEqual("INSTALL_STARTED" in self.seen(), installs)
 
     def test_stale_slave_socket_never_opens_direct_connection(self):
         control_path = self.root / "persistent-state" / "master.sock"

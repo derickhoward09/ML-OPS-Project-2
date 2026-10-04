@@ -72,16 +72,10 @@ case "$check_status" in
         log "Cowrie health unknown; management SSH unavailable."
         exit 2
         ;;
-    3|4) exit "$check_status" ;;
+    3|4|5|7) exit "$check_status" ;;
+    1|6) ;;
+    *) log "Cowrie check is inconclusive; no repair permitted."; exit 7 ;;
 esac
 
 log "Cowrie state is missing or unhealthy; reconciling node 24."
-if ! "$SCRIPT_DIR/deploy.sh"; then
-    log "Cowrie deployment failed."
-    exit 1
-fi
-if ! "$SCRIPT_DIR/deploy.sh" --check; then
-    log "Cowrie deployment finished but the post-check failed."
-    exit 1
-fi
-log "Cowrie is healthy."
+exec "$SCRIPT_DIR/deploy.sh"

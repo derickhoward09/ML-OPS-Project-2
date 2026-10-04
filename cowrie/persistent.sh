@@ -106,16 +106,16 @@ check_health() {
         status=$?
     fi
     case "$status" in
-        3|4) return "$status" ;;
+        1|3|4|5|6|7) return "$status" ;;
         2|124|137)
             # A slow remote health script is different from a dead transport.
             if master_alive && remote_alive; then
                 echo "Cowrie health check failed while the SSH transport remains available." >&2
-                return 1
+                return 7
             fi
             return 2
             ;;
-        *) return 1 ;;
+        *) return 7 ;;
     esac
 }
 
@@ -232,16 +232,19 @@ repair_over_master() {
         status=$?
     fi
     case "$status" in
-        2|4) return "$status" ;;
+        2|4|5|7) return "$status" ;;
         3)
             restore_keys_over_master || return 1
             ;;
     esac
+    status=0
     if COWRIE_SSH_CONTROL_PATH="$CONTROL_PATH" "$SCRIPT_DIR/deploy.sh"; then
         clear_retry_state
         return 0
+    else
+        status=$?
     fi
-    return 1
+    return "$status"
 }
 
 recover() {
@@ -256,6 +259,9 @@ recover() {
     if (( status == 4 )); then
         log "Persistent recovery cannot run without the local group key material."
         return 1
+    fi
+    if (( status == 5 || status == 7 )); then
+        return "$status"
     fi
     if (( status != 2 )) && master_alive && remote_alive; then
         repair_over_master

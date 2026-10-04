@@ -35,6 +35,26 @@ The crontab keeps Cowrie's ordinary minute monitor and the existing redteam sche
 
 ### VM recovery and resource alerts
 
+Cowrie and the delay proxy get 180 seconds to finish starting before recovery
+intervenes. Checks use systemd monotonic start times and continue scheduler
+heartbeats while reporting `STARTING`, without increasing failure counters.
+With correct managed files, recovery first restarts the failed service: a
+Cowrie restart includes its dependent proxy, while a proxy-only restart leaves
+Cowrie running. If readiness still fails after another 180 seconds, recovery
+reconciles the deployment. Missing or changed managed files and unexpected
+Cowrie bindings bypass startup grace. Target-side mutations share a root-owned
+lock and timestamps under `/run/cowrie-recovery`; each targeted restart and full
+reconciliation is limited to once per 300 seconds. This state clears on reboot.
+SSH retries and monitoring continue every minute throughout these intervals.
+
+`cowrie/deploy.sh --check` is read-only. Its results are healthy (0), deployment
+drift or unexpected binding (1), unavailable management SSH (2), mismatched
+authorized keys (3), invalid local key material (4), starting (5), runtime failure
+with correct configuration (6), or inconclusive (7). An inconclusive or timed-out
+check cannot trigger deployment repair. A missing port 2222 listener is reported
+separately from an unexpected binding. The proxy's delayed-banner behavior is
+unchanged.
+
 The scheduler checks the configured application VM every minute. When the VM cannot be reached, the next check retries. When files or units are missing, recovery first restores group-key SSH access with the configured bootstrap key, refreshes the app branch if GitHub is reachable, then runs `scripts/deploy_resumelens.sh`. If services alone are stopped, it restarts them and allows two minutes for health checks before a full redeploy. A failed full deploy enters a five-minute retry cooldown; the monitor and recovery worker run separately so deployment cannot delay Cowrie heartbeats.
 
 The VM's isolated SSH known-hosts file is under `~/.local/state/resumelens-recovery/known_hosts`. If the configured VM's host key changes after a rebuild, the recovery tools replace that VM's isolated pin and reconnect. They do not change global SSH settings. Keep the scheduler's group and bootstrap keys private. The scheduler must retain GitHub SSH access to pull the app repository.

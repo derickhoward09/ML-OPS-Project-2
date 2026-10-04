@@ -141,18 +141,24 @@ fi
 case "$check_status" in
     0)
         ;;
-    2|3|4|124)
-        reason="group-key management SSH on $SSH_PORT failed"
+    2|3|4)
+        reason="management SSH on $SSH_PORT is unavailable; key rejection is not established"
         [[ "$check_status" == 3 ]] && reason="authorized_keys does not match the group public key"
         [[ "$check_status" == 4 ]] && reason="group key material is missing, unreadable, or inconsistent"
         reasons+=("$reason")
         repair_mode=--repair-access
         ;;
-    *)
+    5)
+        log "STARTING: Cowrie/proxy readiness is pending; no repair launched."
+        ;;
+    1|6)
         summary_detail="$(printf '%s' "$check_output" | tr '\r\n' '  ' | cut -c1-240)"
         [[ -n "$summary_detail" ]] || summary_detail="Cowrie deployment or service health check failed"
         reasons+=("$summary_detail")
         repair_mode=--repair-deploy
+        ;;
+    *)
+        reasons+=("Cowrie check is inconclusive (status $check_status); no deployment repair permitted")
         ;;
 esac
 
@@ -196,7 +202,10 @@ PY
     fi
 fi
 
-if (( ${#reasons[@]} == 0 )); then
+if (( check_status == 5 )); then
+    failures=$previous_failures
+    summary="Cowrie/proxy starting; preserving failure counters"
+elif (( ${#reasons[@]} == 0 )); then
     failures=0
     summary="all checks passed"
 else
@@ -205,10 +214,10 @@ else
     summary="$(IFS='; '; echo "${reasons[*]}")"
 fi
 
-if (( failures >= 2 )) && [[ "$health_state" == healthy ]]; then
-    log "Cowrie node 24 DOWN: $summary. Reconciler will retry."
+if (( failures >= 2 && check_status != 5 )) && [[ "$health_state" == healthy ]]; then
+    log "Cowrie node 24 DOWN: $summary. The monitor will check again next minute."
     health_state=failing
-elif (( failures == 0 )) && [[ "$health_state" == failing ]]; then
+elif (( failures == 0 && check_status == 0 )) && [[ "$health_state" == failing ]]; then
     log "Cowrie node 24 RECOVERED: all management and deployment checks passed."
     health_state=healthy
 fi
@@ -238,7 +247,9 @@ if ! ping_healthchecks; then
     log "Healthchecks heartbeat failed or is unconfigured."
 fi
 
-if (( ${#reasons[@]} == 0 )) && ! "$route_failed_this_run"; then
+if (( check_status == 5 )); then
+    log "STARTING: $summary."
+elif (( ${#reasons[@]} == 0 )) && ! "$route_failed_this_run"; then
     log "HEALTHY: $summary."
 elif (( ${#reasons[@]} == 0 )); then
     log "HEALTHY on management SSH and deployment; public $PUBLIC_PORT check failed: $route_result."

@@ -51,7 +51,7 @@ class CowrieMonitorTests(unittest.TestCase):
             '  0) exit 0 ;;\n'
             '  1) echo "Cowrie unhealthy: cowrie.service is inactive" >&2; exit 1 ;;\n'
             '  20) echo "Cowrie unhealthy: authorized_keys differs" >&2; exit 20 ;;\n'
-            '  *) exit 255 ;;\n'
+            '  *) exit "$MOCK_SSH_STATUS" ;;\n'
             'esac\n',
         )
         command(
@@ -149,7 +149,7 @@ class CowrieMonitorTests(unittest.TestCase):
         args = self.ssh_args.read_text()
         self.assertIn("id_ed25519_group_key", args)
         self.assertIn("-p 23001", args)
-        self.assertIn("-F /dev/null", args)
+        self.assertIn("/scripts/ssh_config", args)
         self.assertIn("BatchMode=yes", args)
         self.assertIn("CertificateFile=none", args)
         self.assertIn("authorized_keys", self.ssh_script.read_text())
@@ -196,6 +196,25 @@ class CowrieMonitorTests(unittest.TestCase):
         self.wait_for_lines(self.repairs, 1)
         self.assertIn("persistent.sh --recover", self.repairs.read_text())
         self.assertEqual(self.events_seen().count("heartbeat"), 2)
+
+    def test_starting_preserves_counters_and_heartbeat_without_repair(self):
+        self.state_dir.mkdir(exist_ok=True)
+        (self.state_dir / "status").write_text("2 failing\n")
+        result = self.run_monitor(MOCK_SSH_STATUS="5")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.state_dir / "status").read_text(), "2 failing\n")
+        self.assertIn("STARTING", result.stdout)
+        self.assertNotIn("RECOVERED", result.stdout)
+        self.assertEqual(self.events_seen(), ["heartbeat"])
+        self.assertEqual(self.count_lines(self.repairs), 0)
+
+    def test_inconclusive_result_never_launches_repair(self):
+        for status in (7, 99, 124):
+            result = self.run_monitor(MOCK_SSH_STATUS=str(status))
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("inconclusive", result.stdout)
+        self.assertEqual(self.events_seen(), ["heartbeat"] * 3)
+        self.assertEqual(self.count_lines(self.repairs), 0)
 
     def test_two_management_failures_then_one_recovery_and_heartbeat_each_run(self):
         bad = {"MOCK_SSH_STATUS": "1"}

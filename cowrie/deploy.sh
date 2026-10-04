@@ -21,7 +21,8 @@ With no arguments, install or repair Cowrie 3.0.15 and the delay proxy on node
 without modifying the target. Its exit status distinguishes an unhealthy
 deployment (1), unavailable SSH access (2), and a mismatched authorized_keys
 file (3), and unavailable local key material (4). This script never uses the
-student-admin bootstrap key.
+student-admin bootstrap key. Additional results: starting (5), runtime failure
+with correct configuration (6), and inconclusive check (7).
 EOF
 }
 
@@ -47,7 +48,11 @@ if [[ ! -s "$GROUP_PUBLIC_KEY" || ! -r "$GROUP_PUBLIC_KEY" ]]; then
 fi
 if [[ ! -s "$PROXY_SOURCE" || ! -r "$PROXY_SOURCE" ]]; then
     printf 'ERROR: delay proxy source is missing or unreadable: %s\n' "$PROXY_SOURCE" >&2
-    exit 1
+    exit 7
+fi
+if [[ ! -r "$SCRIPT_DIR/remote_recovery.sh" ]]; then
+    echo 'ERROR: target recovery helper is unavailable.' >&2
+    exit 7
 fi
 
 SSH_OPTIONS=(
@@ -202,63 +207,16 @@ DELAY_UNIT_HASH="$(sha256_file "$local_stage/cowrie-delay.service")"
 PROXY_HASH="$(sha256_file "$local_stage/delay_proxy.py")"
 AUTHORIZED_KEYS_HASH="$(sha256_file "$GROUP_PUBLIC_KEY")"
 
+remote_command() {
+    # Append the caller's script after the shared target-side functions.
+    { cat "$SCRIPT_DIR/remote_recovery.sh"; cat; } | \
+        ssh "${SSH_OPTIONS[@]}" "$TARGET" \
+        "sudo -n bash -s -- '$CFG_HASH' '$USERDB_HASH' '$COWRIE_UNIT_HASH' '$DELAY_UNIT_HASH' '$PROXY_HASH' '$AUTHORIZED_KEYS_HASH' ${1:-}"
+}
+
 verify_remote() {
-    ssh "${SSH_OPTIONS[@]}" "$TARGET" \
-        "sudo -n bash -s -- '$CFG_HASH' '$USERDB_HASH' '$COWRIE_UNIT_HASH' '$DELAY_UNIT_HASH' '$PROXY_HASH' '$AUTHORIZED_KEYS_HASH'" \
-        <<'REMOTE_CHECK'
-set -Eeuo pipefail
-
-cfg_hash="$1"
-userdb_hash="$2"
-cowrie_unit_hash="$3"
-delay_unit_hash="$4"
-proxy_hash="$5"
-authorized_keys_hash="$6"
-state=/opt/cowrie/honeypot
-student_home="$(getent passwd student-admin 2>/dev/null | awk -F: 'NR == 1 { print $6 }')" || true
-
-unhealthy() {
-    printf 'Cowrie unhealthy: %s\n' "$1" >&2
-    exit 1
-}
-matches_hash() {
-    [[ -f "$2" ]] && printf '%s  %s\n' "$1" "$2" | sha256sum -c --status
-}
-matches_attrs() {
-    [[ -f "$2" ]] && [[ "$(stat -c '%U:%G:%a' "$2")" == "$1" ]]
-}
-
-[[ -n "$student_home" ]] || unhealthy 'student-admin account is missing'
-matches_hash "$authorized_keys_hash" "$student_home/.ssh/authorized_keys" || {
-    printf 'Cowrie unhealthy: authorized_keys does not match the group public key.\n' >&2
-    exit 20
-}
-[[ "${EUID}" == 0 ]] || unhealthy 'passwordless target sudo is unavailable'
-getent passwd cowrie >/dev/null || unhealthy 'cowrie user is missing'
-getent group cowrie >/dev/null || unhealthy 'cowrie group is missing'
-[[ "$(stat -c '%U:%G:%a' /opt/cowrie 2>/dev/null)" == root:root:755 ]] || unhealthy '/opt/cowrie directory ownership or permissions differ'
-[[ "$(stat -c '%U:%G:%a' "$state" 2>/dev/null)" == cowrie:cowrie:750 ]] || unhealthy 'Cowrie state directory ownership or permissions differ'
-[[ ! -e "$state/cowrie.cfg" ]] || unhealthy 'flat cowrie.cfg overrides managed configuration'
-[[ -x "$state/cowrie-env/bin/python" ]] || unhealthy 'Cowrie virtual environment is missing'
-[[ -x "$state/cowrie-env/bin/cowrie" ]] || unhealthy 'Cowrie command is missing'
-version="$("$state/cowrie-env/bin/python" -c 'from importlib.metadata import version; print(version("cowrie"))' 2>/dev/null)" || unhealthy 'Cowrie package is missing'
-[[ "$version" == 3.0.15 ]] || unhealthy "Cowrie version is $version, expected 3.0.15"
-matches_hash "$cfg_hash" "$state/etc/cowrie.cfg" || unhealthy 'cowrie.cfg differs'
-matches_hash "$userdb_hash" "$state/etc/userdb.txt" || unhealthy 'userdb.txt differs'
-matches_hash "$cowrie_unit_hash" /etc/systemd/system/cowrie.service || unhealthy 'cowrie.service differs'
-matches_hash "$delay_unit_hash" /etc/systemd/system/cowrie-delay.service || unhealthy 'cowrie-delay.service differs'
-matches_hash "$proxy_hash" /opt/cowrie/delay_proxy.py || unhealthy 'delay proxy differs'
-matches_attrs cowrie:cowrie:600 "$state/etc/cowrie.cfg" || unhealthy 'cowrie.cfg ownership or permissions differ'
-matches_attrs cowrie:cowrie:600 "$state/etc/userdb.txt" || unhealthy 'userdb.txt ownership or permissions differ'
-matches_attrs root:root:644 /etc/systemd/system/cowrie.service || unhealthy 'cowrie.service ownership or permissions differ'
-matches_attrs root:root:644 /etc/systemd/system/cowrie-delay.service || unhealthy 'cowrie-delay.service ownership or permissions differ'
-matches_attrs root:root:644 /opt/cowrie/delay_proxy.py || unhealthy 'delay proxy ownership or permissions differ'
-systemctl is-enabled --quiet cowrie.service || unhealthy 'cowrie.service is disabled'
-systemctl is-enabled --quiet cowrie-delay.service || unhealthy 'cowrie-delay.service is disabled'
-systemctl is-active --quiet cowrie.service || unhealthy 'cowrie.service is inactive'
-systemctl is-active --quiet cowrie-delay.service || unhealthy 'cowrie-delay.service is inactive'
-ss -H -ltn | awk '$4 ~ /:2222$/ { found=1; if ($4 != "127.0.0.1:2222") bad=1 } END { exit !(found && !bad) }' || unhealthy 'Cowrie is not bound only to loopback:2222'
-ss -H -ltn | awk '$4 ~ /^(0[.]0[.]0[.]0|[*]):22001$/ { found=1 } END { exit !found }' || unhealthy 'delay proxy is not bound to public port 22001'
+    remote_command <<'REMOTE_CHECK'
+remote_health "$@"
 REMOTE_CHECK
 }
 
@@ -270,19 +228,26 @@ else
     verify_status=$?
 fi
 case "$verify_status" in
-    255)
-        printf 'Cowrie health unknown; management SSH unavailable.\n' >&2
-        exit 2
-        ;;
+    255) printf 'Cowrie health unknown; management SSH unavailable.\n' >&2; exit 2 ;;
     20) exit 3 ;;
+    0|1|5|6|7) ;;
+    *) printf 'Cowrie health unknown; remote health check failed (status %s).\n' "$verify_status" >&2; exit 7 ;;
 esac
-if [[ "$MODE" == check ]]; then
-    exit 1
+if [[ "$MODE" == check || "$verify_status" == 5 || "$verify_status" == 7 ]]; then
+    exit "$verify_status"
 fi
-# Only the remote health check's explicit unhealthy result permits repair.
-if [[ "$verify_status" != 1 ]]; then
-    printf 'Cowrie health unknown; remote health check failed (status %s).\n' "$verify_status" >&2
-    exit 1
+if [[ "$verify_status" == 6 ]]; then
+    recovery_status=0
+    remote_command <<'REMOTE_RECOVER' || recovery_status=$?
+recover_runtime "$@"
+REMOTE_RECOVER
+    case "$recovery_status" in
+        1) ;; # Failed targeted restart: proceed to locked reconciliation.
+        255) exit 2 ;;
+        20) exit 3 ;;
+        0|5|6|7) exit "$recovery_status" ;;
+        *) exit 7 ;;
+    esac
 fi
 
 printf 'Cowrie state is missing or unhealthy; reconciling node 24.\n'
@@ -298,10 +263,11 @@ fi
 tar -C "$local_stage" -cf - . | \
     ssh "${SSH_OPTIONS[@]}" "$TARGET" "tar -xf - -C '$remote_stage'"
 
-ssh "${SSH_OPTIONS[@]}" "$TARGET" "sudo -n bash -s -- '$remote_stage'" <<'REMOTE_INSTALL'
+install_status=0
+remote_command "'$remote_stage'" <<'REMOTE_INSTALL' || install_status=$?
 set -Eeuo pipefail
 
-stage="$1"
+stage="${7}"
 state=/opt/cowrie/honeypot
 venv="$state/cowrie-env"
 
@@ -312,6 +278,22 @@ for file in cowrie.cfg userdb.txt cowrie.service cowrie-delay.service delay_prox
 done
 . /etc/os-release
 [[ "$ID" == ubuntu && "$VERSION_ID" == 22.04 ]] || { echo 'ERROR: expected Ubuntu 22.04 on target' >&2; exit 1; }
+
+# Recheck under the same target lock used by service-only recovery.
+recovery_lock || exit $?
+status=0
+remote_health "${@:1:6}" || status=$?
+case "$status" in
+    0|5|7|20) exit "$status" ;;
+    1|6) ;;
+    *) exit 7 ;;
+esac
+if (( status == 6 )); then
+    restart="$(read_timestamp restart)" || exit 7
+    now="$(monotonic_seconds)" || exit 7
+    (( restart >= 0 && now >= restart && now - restart >= STARTUP_GRACE )) || exit 6
+fi
+reserve_reconciliation || exit $?
 
 # Stop the managed services before changing their package or effective config.
 for service in cowrie-delay.service cowrie.service; do
@@ -388,14 +370,24 @@ systemctl enable cowrie.service cowrie-delay.service >/dev/null
 systemctl start cowrie.service
 systemctl start cowrie-delay.service
 REMOTE_INSTALL
+case "$install_status" in
+    0) ;;
+    255) exit 2 ;;
+    20) exit 3 ;;
+    1|5|6|7) exit "$install_status" ;;
+    *) exit 7 ;;
+esac
 
-# The remote script may have succeeded while a service is still starting.
-for attempt in {1..15}; do
-    if verify_remote; then
-        printf 'Cowrie 3.0.15 and delay proxy are healthy on node 24.\n'
-        exit 0
-    fi
-    sleep 2
-done
-printf 'ERROR: deployment completed but Cowrie health verification failed.\n' >&2
-exit 1
+# A successful install can still be starting. Leave the grace period to the
+# next minute's read-only check instead of repeatedly polling or reinstalling.
+status=0
+verify_remote || status=$?
+case "$status" in
+    0) printf 'Cowrie 3.0.15 and delay proxy are healthy on node 24.\n' ;;
+    5) printf 'Cowrie/proxy startup is pending; the next minute check will verify readiness.\n' ;;
+    255) exit 2 ;;
+    20) exit 3 ;;
+    1|6|7) exit "$status" ;;
+    *) exit 7 ;;
+esac
+exit "$status"
