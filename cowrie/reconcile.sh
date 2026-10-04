@@ -61,9 +61,19 @@ if ! "$SCRIPT_DIR/retry_access.sh"; then
     exit 1
 fi
 
+check_status=0
 if "$SCRIPT_DIR/deploy.sh" --check; then
     exit 0
+else
+    check_status=$?
 fi
+case "$check_status" in
+    2)
+        log "Cowrie health unknown; management SSH unavailable."
+        exit 2
+        ;;
+    3|4) exit "$check_status" ;;
+esac
 
 log "Cowrie state is missing or unhealthy; reconciling node 24."
 if ! "$SCRIPT_DIR/deploy.sh"; then

@@ -7,6 +7,7 @@ NODE="${RESUMELENS_NODE:-24}"
 PORT="${RESUMELENS_SSH_PORT:-23001}"
 HOST="${RESUMELENS_SSH_HOST:-paffenroth-23.dyn.wpi.edu}"
 REMOTE_USER="${RESUMELENS_SSH_USER:-student-admin}"
+SSH_JUMP="${RESUMELENS_SSH_JUMP:-${SSH_JUMP:-turing.wpi.edu}}"
 if [[ "$HOST" == *@* ]]; then
     REMOTE_USER="${HOST%@*}"
     HOST="${HOST#*@}"
@@ -70,6 +71,7 @@ log() {
 SSH_OPTIONS=(
     -T
     -F /dev/null
+    -J "$SSH_JUMP"
     -p "$PORT"
     -o IdentitiesOnly=yes
     -o CertificateFile=none

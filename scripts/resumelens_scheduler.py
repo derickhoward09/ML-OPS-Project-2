@@ -420,6 +420,7 @@ def ensure_access(values: dict[str, str]) -> bool:
         "RESUMELENS_SSH_HOST": values["SSH_HOST"], "RESUMELENS_SSH_PORT": values["SSH_PORT"],
         "RESUMELENS_SSH_KEY": values["SSH_KEY"], "RESUMELENS_BOOTSTRAP_KEY": values["SSH_BOOTSTRAP_KEY"],
         "RESUMELENS_GROUP_PUBLIC_KEY": values["SSH_GROUP_PUBLIC_KEY"],
+        "RESUMELENS_SSH_JUMP": values.get("SSH_JUMP") or "turing.wpi.edu",
     })
     result = subprocess.run(["/bin/bash", str(ROOT / "scripts/ssh_key_access.sh")], env=environment, capture_output=True, text=True, timeout=90)
     if result.returncode:

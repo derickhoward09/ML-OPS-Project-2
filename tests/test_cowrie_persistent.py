@@ -67,10 +67,11 @@ class PersistentConnectionTests(unittest.TestCase):
         )
         command(
             "ssh",
-            r'''key="" control="" operation="" is_master=false command_arg="" proxy_blocked=false
+            r'''key="" control="" operation="" jump="" is_master=false command_arg="" proxy_blocked=false
 for ((i=1; i<=$#; i++)); do
     arg="${!i}"
     case "$arg" in
+        -J) next=$((i+1)); jump="${!next}" ;;
         -i) next=$((i+1)); key="${!next}" ;;
         -S) next=$((i+1)); control="${!next}" ;;
         -O) next=$((i+1)); operation="${!next}" ;;
@@ -91,6 +92,12 @@ if [[ "$operation" == exit ]]; then
     rm -f "$FAKE_MASTER"
     rm -f "$control"
     exit 0
+fi
+if [[ -z "$operation" && ( -z "$control" || "$is_master" == true ) ]]; then
+    [[ "$jump" == "${FAKE_EXPECTED_JUMP:-turing.wpi.edu}" ]] || {
+        echo "Unexpected jump host: $jump" >&2
+        exit 96
+    }
 fi
 if "$is_master"; then
     printf 'MASTER_START\n' >> "$FAKE_SSH_EVENTS"
@@ -157,6 +164,15 @@ else
     printf 'DIRECT_UNKNOWN\n' >> "$FAKE_SSH_EVENTS"
     exit 255
 fi
+if [[ "$command_arg" == sudo\ -n\ bash\ -s* ]]; then
+    printf 'DEPLOY_CHECK\n' >> "$FAKE_SSH_EVENTS"
+    cat >/dev/null
+    exit "${FAKE_DIRECT_CHECK_STATUS:-0}"
+fi
+if [[ "$command_arg" == 'sudo -n bash -c true' ]]; then
+    printf 'INSTALL_STARTED\n' >> "$FAKE_SSH_EVENTS"
+    exit 99
+fi
 case "$command_arg" in
     true) exit 0 ;;
     'cat "$HOME/.ssh/authorized_keys"') cat "$FAKE_REMOTE_AUTH" ;;
@@ -173,6 +189,8 @@ esac
         )
 
         self.env = os.environ.copy()
+        self.env.pop("SSH_JUMP", None)
+        self.env.pop("RESUMELENS_SSH_JUMP", None)
         self.env.update(
             {
                 "HOME": str(self.home),
@@ -248,6 +266,37 @@ esac
         self.assert_status(0, "--recover")
         self.assertEqual(self.remote_auth.read_text(), self.public_key)
         self.assertFalse(any(event.startswith("DIRECT_") or event == "MASTER_START" for event in self.seen()))
+
+    def test_jump_host_precedence_for_deploy_and_master(self):
+        for overrides, expected in (
+            ({}, "turing.wpi.edu"),
+            ({"SSH_JUMP": "legacy.example"}, "legacy.example"),
+            ({"SSH_JUMP": "legacy.example", "RESUMELENS_SSH_JUMP": "preferred.example"}, "preferred.example"),
+        ):
+            with self.subTest(expected=expected):
+                env = dict(self.env, **overrides, FAKE_EXPECTED_JUMP=expected)
+                result = subprocess.run(
+                    ["bash", str(self.cowrie / "deploy.sh"), "--check"],
+                    env=env, text=True, capture_output=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                result = self.run_persistent("--initialize", **overrides, FAKE_EXPECTED_JUMP=expected)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assert_status(0, "--stop")
+
+    def test_deploy_only_installs_after_confirmed_unhealthy_check(self):
+        for remote_status, expected, installs in ((255, 2, False), (20, 3, False), (99, 1, False), (1, 99, True)):
+            with self.subTest(remote_status=remote_status):
+                self.events.write_text("")
+                result = subprocess.run(
+                    ["bash", str(self.cowrie / "deploy.sh")],
+                    env=dict(self.env, FAKE_DIRECT_CHECK_STATUS=str(remote_status)),
+                    text=True, capture_output=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                self.assertEqual("INSTALL_STARTED" in self.seen(), installs)
+                if remote_status == 255:
+                    self.assertIn("Cowrie health unknown; management SSH unavailable", result.stderr)
 
     def test_stale_slave_socket_never_opens_direct_connection(self):
         control_path = self.root / "persistent-state" / "master.sock"

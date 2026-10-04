@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 TARGET=student-admin@paffenroth-23.dyn.wpi.edu
 PORT=23001
+SSH_JUMP="${RESUMELENS_SSH_JUMP:-${SSH_JUMP:-turing.wpi.edu}}"
 GROUP_KEY="$HOME/.ssh/mlops/id_ed25519_group_key"
 GROUP_PUBLIC_KEY="$HOME/.ssh/mlops/id_ed25519_group_key.pub"
 STUDENT_KEY="$HOME/.ssh/mlops/student-admin_key"
@@ -64,9 +65,9 @@ SSH_COMMON=(
     -o ClearAllForwardings=yes
     -o LogLevel=ERROR
 )
-SSH_GROUP=("${SSH_COMMON[@]}" -i "$GROUP_KEY")
-SSH_STUDENT=("${SSH_COMMON[@]}" -i "$STUDENT_KEY" -o ControlPath=none)
-SSH_MUX=("${SSH_GROUP[@]}" -S "$CONTROL_PATH" -o ControlMaster=no -o ProxyCommand=/bin/false)
+SSH_GROUP=("${SSH_COMMON[@]}" -J "$SSH_JUMP" -i "$GROUP_KEY")
+SSH_STUDENT=("${SSH_COMMON[@]}" -J "$SSH_JUMP" -i "$STUDENT_KEY" -o ControlPath=none)
+SSH_MUX=("${SSH_COMMON[@]}" -i "$GROUP_KEY" -S "$CONTROL_PATH" -o ControlMaster=no -o ProxyCommand=/bin/false)
 
 key_material_available() {
     [[ -s "$GROUP_KEY" && -r "$GROUP_KEY" && -s "$GROUP_PUBLIC_KEY" && -r "$GROUP_PUBLIC_KEY" ]]

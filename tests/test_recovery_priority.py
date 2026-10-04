@@ -70,6 +70,33 @@ class RecoveryPriorityTests(unittest.TestCase):
                             self.assertEqual(result.returncode, 0)
                             self.assertIn("deploy", seen)
 
+    def test_full_reconcile_does_not_repair_unavailable_ssh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cowrie = root / "cowrie"
+            cowrie.mkdir()
+            shutil.copy2(ROOT / "cowrie/reconcile.sh", cowrie / "reconcile.sh")
+            commands = root / "bin"
+            commands.mkdir()
+            for path, body in (
+                (commands / "python3", 'exit 0'),
+                (cowrie / "retry_access.sh", 'exit 0'),
+                (cowrie / "deploy.sh", 'echo "$*" >> "$EVENTS"; if [[ "${1:-}" == --check ]]; then exit "$CHECK_STATUS"; fi'),
+            ):
+                path.write_text("#!/bin/bash\n" + body + "\n")
+                path.chmod(0o755)
+            events = root / "events"
+            env = dict(os.environ, PATH=str(commands) + os.pathsep + os.environ["PATH"],
+                       XDG_STATE_HOME=str(root / "state"), EVENTS=str(events))
+            for status in (2, 3, 4):
+                events.write_text("")
+                result = subprocess.run(["bash", str(cowrie / "reconcile.sh")],
+                                        env=dict(env, CHECK_STATUS=str(status)), capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, status)
+                self.assertEqual(events.read_text().splitlines(), ["--check"])
+                if status == 2:
+                    self.assertIn("Cowrie health unknown; management SSH unavailable", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

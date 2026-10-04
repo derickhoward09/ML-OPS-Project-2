@@ -13,6 +13,8 @@ The app source defaults to `~/cs553-case-study-1` on the scheduler. Setup clones
 
 A one-minute scheduler check connects through `ssh -J turing.wpi.edu` by default (a nonempty `SSH_JUMP` overrides the jump host) and verifies SSH access, required files, enabled and active services, UI/router HTTP health, fresh monitor status, and the VM heartbeat timer. If services alone stop, recovery restarts them and checks for up to two minutes. If installation files or units are missing, or a restart fails, it restores group-key access with the bootstrap key and redeploys. Recovery uses a lock shared with manual deploys; failed full deployments wait five minutes before retrying. The monitor returns promptly while installations run in a separate worker.
 
+The shared SSH access-recovery helper also defaults to `turing.wpi.edu`, with `RESUMELENS_SSH_JUMP` or `SSH_JUMP` available as overrides. The scheduler passes its configured jump host to the helper.
+
 Honeypot recovery (minute reconciliation and persistent recovery) first runs ResumeLens recovery and confirms that the app is healthy. If app recovery fails or another app deployment is still running and the app remains unhealthy, Cowrie restoration is deferred until the next check. Honeypot health checks and scheduler heartbeats continue independently.
 
 For this configured VM, deployment and recovery keep an isolated known-hosts file and automatically replace its entry when the VM's SSH host key changes. This is scoped to the target connection and does not alter global SSH settings. Keep GitHub SSH access and both SSH keys available on the scheduler for unattended rebuilds.

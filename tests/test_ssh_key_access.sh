@@ -15,6 +15,7 @@ cat > "$FIXTURE_DIR/bin/ssh" <<'MOCK_SSH'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 [[ " $* " == *" -F /dev/null "* ]]
+[[ " $* " == *" -J ${FAKE_EXPECTED_JUMP:-turing.wpi.edu} "* ]]
 [[ " $* " == *" -p 23001 "* ]]
 [[ " $* " == *" -o CertificateFile=none "* ]]
 [[ " $* " == *" -o PreferredAuthentications=publickey "* ]]
@@ -75,6 +76,9 @@ bootstrap_calls_before="$(grep -c '/student-admin_key$' "$FAKE_CALLS")"
 [[ "$(wc -l < "$FAKE_WRITES")" -eq 2 ]]
 bootstrap_calls_after="$(grep -c '/student-admin_key$' "$FAKE_CALLS")"
 [[ "$bootstrap_calls_before" == "$bootstrap_calls_after" ]]
+
+RESUMELENS_SSH_JUMP=custom.example.edu FAKE_EXPECTED_JUMP=custom.example.edu \
+    "$REPO_ROOT/scripts/ssh_key_access.sh" >/dev/null
 
 printf 'unexpected-extra-key\n' >> "$FAKE_REMOTE_AUTH"
 "$REPO_ROOT/scripts/ssh_key_access.sh" >/dev/null

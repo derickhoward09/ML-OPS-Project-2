@@ -10,6 +10,7 @@ GROUP_KEY="$HOME/.ssh/mlops/id_ed25519_group_key"
 GROUP_PUBLIC_KEY="$HOME/.ssh/mlops/id_ed25519_group_key.pub"
 TARGET="student-admin@paffenroth-23.dyn.wpi.edu"
 SSH_PORT=23001
+SSH_JUMP="${RESUMELENS_SSH_JUMP:-${SSH_JUMP:-turing.wpi.edu}}"
 
 usage() {
     cat <<'EOF'
@@ -84,6 +85,8 @@ if [[ -n "${COWRIE_SSH_CONTROL_PATH:-}" ]]; then
         -o ControlMaster=no
         -o ProxyCommand=/bin/false
     )
+else
+    SSH_OPTIONS+=(-J "$SSH_JUMP")
 fi
 
 local_stage=""
@@ -266,12 +269,20 @@ if verify_remote; then
 else
     verify_status=$?
 fi
+case "$verify_status" in
+    255)
+        printf 'Cowrie health unknown; management SSH unavailable.\n' >&2
+        exit 2
+        ;;
+    20) exit 3 ;;
+esac
 if [[ "$MODE" == check ]]; then
-    case "$verify_status" in
-        20) exit 3 ;;
-        255) exit 2 ;;
-        *) exit 1 ;;
-    esac
+    exit 1
+fi
+# Only the remote health check's explicit unhealthy result permits repair.
+if [[ "$verify_status" != 1 ]]; then
+    printf 'Cowrie health unknown; remote health check failed (status %s).\n' "$verify_status" >&2
+    exit 1
 fi
 
 printf 'Cowrie state is missing or unhealthy; reconciling node 24.\n'
