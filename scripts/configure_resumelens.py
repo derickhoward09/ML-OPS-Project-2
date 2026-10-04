@@ -46,6 +46,8 @@ cache-ram = 0
 '''
     for repo,filename,_ in MODELS:
         preset += f'\n[{repo}]\nmodel = {root / "models" / filename}\n'
+        if repo == MODELS[0][0]:
+            preset += 'load-on-startup = true\n'
     (root/'.deploy/models.ini').write_text(preset)
     user = pwd.getpwuid(os.getuid()).pw_name
     common = f'''[Unit]

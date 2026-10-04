@@ -56,6 +56,11 @@ def test_model_revisions_are_pinned(root,monkeypatch):
  preset=(root/'.deploy/models.ini').read_text()
  assert '[Qwen/Qwen3-0.6B-GGUF]' in preset
  assert '[LiquidAI/LFM2.5-1.2B-Instruct-GGUF]' in preset
+ from configparser import ConfigParser
+ settings=ConfigParser(interpolation=None)
+ settings.read_string(preset.split('\n',1)[1])
+ assert settings['Qwen/Qwen3-0.6B-GGUF'].getboolean('load-on-startup') is True
+ assert not settings['LiquidAI/LFM2.5-1.2B-Instruct-GGUF'].getboolean('load-on-startup',fallback=False)
  assert 'prism-ml/Ternary-Bonsai-1.7B-gguf' not in preset
 
 def test_unrelated_listener_aborts_before_install(tmp_path):

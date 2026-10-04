@@ -60,11 +60,15 @@ for _ in range(60):
  try:
   for url in ['http://127.0.0.1:8080/health','http://127.0.0.1:7860/']:
    httpx.get(url,timeout=2).raise_for_status()
+  response=httpx.get('http://127.0.0.1:8080/models',timeout=2)
+  response.raise_for_status()
+  models={item['id']:item['status']['value'] for item in response.json()['data']}
+  if models.get('Qwen/Qwen3-0.6B-GGUF') != 'loaded': raise ValueError('Qwen startup loading is not complete')
   status=json.load(open('/run/resumelens-monitor/status.json'))
   if time.time()-float(status['timestamp']) > 5: raise ValueError('resource monitor status is stale')
   for unit in ['resumelens-app','resumelens-inference','resumelens-monitor','resumelens-vm-heartbeat.timer']:
    subprocess.run(['systemctl','is-active','--quiet',unit],check=True)
-  print('Deployment healthy: UI and CPU router respond; resource monitor and VM heartbeat timer are active')
+  print('Deployment healthy: Qwen is loaded; UI and CPU router respond; resource monitor and VM heartbeat timer are active')
   break
  except (httpx.HTTPError,OSError,ValueError,subprocess.CalledProcessError):time.sleep(1)
 else:raise SystemExit('Health check failed; inspect journalctl -u resumelens-app -u resumelens-inference')

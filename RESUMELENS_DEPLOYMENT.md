@@ -107,6 +107,11 @@ was faster end-to-end and used less memory in the collected runs; both models
 still produced factual errors and need human review. The router keeps one model
 resident at a time.
 
+Qwen's preset enables `load-on-startup`, so the inference service loads it into
+memory automatically after deployment, service restarts, and VM reboots. Deployment
+health checks wait for Qwen to report `loaded`. The backup still loads on demand;
+switching to it unloads Qwen because the router allows one resident model.
+
 See `RESUMELENS_VERIFICATION.md` for deployment and acceptance measurements.
 
 ## Comparing alternative CPU models
