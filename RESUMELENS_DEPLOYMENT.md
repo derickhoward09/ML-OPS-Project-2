@@ -17,6 +17,8 @@ The shared SSH access-recovery helper also defaults to `turing.wpi.edu`, with `R
 
 Honeypot recovery (minute reconciliation and persistent recovery) first runs ResumeLens recovery and confirms that the app is healthy. If app recovery fails or another app deployment is still running and the app remains unhealthy, Cowrie restoration is deferred until the next check. Honeypot health checks and scheduler heartbeats continue independently.
 
+Active jump-host connections use `scripts/ssh_config`, which disables stored host-key checks only for `turing.wpi.edu` because its login nodes rotate. User SSH authentication settings are included; other jump hosts retain their configured host-key policy. This accepts any host key presented for Turing.
+
 For this configured VM, deployment and recovery keep an isolated known-hosts file and automatically replace its entry when the VM's SSH host key changes. This is scoped to the target connection and does not alter global SSH settings. Keep GitHub SSH access and both SSH keys available on the scheduler for unattended rebuilds.
 
 ## Deploy

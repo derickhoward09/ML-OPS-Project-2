@@ -22,6 +22,8 @@ class RedteamScanTests(unittest.TestCase):
         self.repo = self.root / "repo"
         self.repo.mkdir()
         shutil.copy2(ROOT / "redteam_scan_flag.sh", self.repo)
+        (self.repo / "scripts").mkdir()
+        shutil.copy2(ROOT / "scripts/ssh_config", self.repo / "scripts/ssh_config")
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.home = self.root / "home"

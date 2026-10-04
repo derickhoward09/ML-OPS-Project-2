@@ -51,7 +51,7 @@ if [[ ! -s "$PROXY_SOURCE" || ! -r "$PROXY_SOURCE" ]]; then
 fi
 
 SSH_OPTIONS=(
-    -T -F /dev/null -p "$SSH_PORT" -i "$GROUP_KEY"
+    -T -F "$SCRIPT_DIR/../scripts/ssh_config" -p "$SSH_PORT" -i "$GROUP_KEY"
     -o BatchMode=yes
     -o IdentitiesOnly=yes
     -o CertificateFile=none

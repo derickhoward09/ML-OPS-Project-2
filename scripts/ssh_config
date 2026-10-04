@@ -1,0 +1,10 @@
+# Turing resolves to rotating login nodes with different host keys.
+# This exception applies only to the class jump host.
+Host turing.wpi.edu
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+    GlobalKnownHostsFile /dev/null
+
+# Preserve user authentication settings, including keys for the jump host.
+Host *
+    Include ~/.ssh/config

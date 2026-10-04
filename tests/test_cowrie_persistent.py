@@ -23,6 +23,7 @@ class PersistentConnectionTests(unittest.TestCase):
             shutil.copy2(REPO_ROOT / "cowrie" / name, self.cowrie / name)
         (self.repo / "scripts").mkdir()
         shutil.copy2(REPO_ROOT / "scripts" / "ssh_key_access.sh", self.repo / "scripts" / "ssh_key_access.sh")
+        shutil.copy2(REPO_ROOT / "scripts" / "ssh_config", self.repo / "scripts" / "ssh_config")
 
         self.home = self.root / "home"
         keys = self.home / ".ssh" / "mlops"

@@ -594,6 +594,7 @@ else
 fi
 
 ssh_opts=(
+    -F "$SCRIPT_DIR/scripts/ssh_config"
     -T
     -o IdentitiesOnly=yes
     -o BatchMode=yes

@@ -357,7 +357,7 @@ def ssh_base(values: dict[str, str]) -> list[str]:
     known_hosts = state_dir / "known_hosts"
     known_hosts.touch(mode=0o600, exist_ok=True)
     os.chmod(known_hosts, 0o600)
-    args = ["ssh", "-T", "-i", values["SSH_KEY"], "-p", values["SSH_PORT"], "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "ConnectTimeout=8", "-o", "ConnectionAttempts=1", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2", "-o", "StrictHostKeyChecking=accept-new", "-o", f"UserKnownHostsFile={known_hosts}", "-o", "GlobalKnownHostsFile=/dev/null"]
+    args = ["ssh", "-F", str(ROOT / "scripts/ssh_config"), "-T", "-i", values["SSH_KEY"], "-p", values["SSH_PORT"], "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "ConnectTimeout=8", "-o", "ConnectionAttempts=1", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2", "-o", "StrictHostKeyChecking=accept-new", "-o", f"UserKnownHostsFile={known_hosts}", "-o", "GlobalKnownHostsFile=/dev/null"]
     args += ["-J", values.get("SSH_JUMP") or "turing.wpi.edu"]
     args.append(host)
     return args

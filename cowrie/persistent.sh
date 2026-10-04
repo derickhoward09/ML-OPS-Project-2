@@ -45,7 +45,7 @@ log() {
 }
 
 SSH_COMMON=(
-    -T -F /dev/null -p "$PORT"
+    -T -F "$REPO_ROOT/scripts/ssh_config" -p "$PORT"
     -o BatchMode=yes
     -o IdentitiesOnly=yes
     -o CertificateFile=none
@@ -76,7 +76,7 @@ key_material_available() {
 master_alive() {
     # The control command is local to the Unix socket. Its failing proxy
     # fallback guarantees that this liveness check cannot open target TCP.
-    timeout --kill-after=1s 4s ssh -F /dev/null -S "$CONTROL_PATH" \
+    timeout --kill-after=1s 4s ssh -F "$REPO_ROOT/scripts/ssh_config" -S "$CONTROL_PATH" \
         -o ProxyCommand=/bin/false -O check -p "$PORT" "$TARGET" \
         >/dev/null 2>&1
 }
@@ -194,7 +194,7 @@ start_group_master() {
         # shut down before its socket is replaced, or it could keep an orphan
         # TCP connection open and defeat the single-connection design.
         log "Persistent SSH master is unresponsive; requesting a clean exit."
-        timeout --kill-after=1s 5s ssh -F /dev/null -S "$CONTROL_PATH" \
+        timeout --kill-after=1s 5s ssh -F "$REPO_ROOT/scripts/ssh_config" -S "$CONTROL_PATH" \
             -o ProxyCommand=/bin/false -O exit -p "$PORT" "$TARGET" \
             >/dev/null 2>&1 || true
         if master_alive; then
@@ -311,7 +311,7 @@ recover() {
 stop_master() {
     local attempt
     if master_alive; then
-        if ! timeout --kill-after=1s 5s ssh -F /dev/null -S "$CONTROL_PATH" \
+        if ! timeout --kill-after=1s 5s ssh -F "$REPO_ROOT/scripts/ssh_config" -S "$CONTROL_PATH" \
             -o ProxyCommand=/bin/false -O exit -p "$PORT" "$TARGET" \
             >/dev/null 2>&1; then
             log "Could not stop the persistent SSH master."

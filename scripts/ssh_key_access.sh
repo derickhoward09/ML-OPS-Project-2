@@ -70,7 +70,7 @@ log() {
 
 SSH_OPTIONS=(
     -T
-    -F /dev/null
+    -F "$SCRIPT_DIR/ssh_config"
     -J "$SSH_JUMP"
     -p "$PORT"
     -o IdentitiesOnly=yes

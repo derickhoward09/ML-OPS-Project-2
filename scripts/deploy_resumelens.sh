@@ -35,7 +35,7 @@ PY
 known_hosts="$STATE_DIR/known_hosts"
 touch "$known_hosts"
 chmod 600 "$known_hosts"
-ssh_args=(-i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$known_hosts" -o GlobalKnownHostsFile=/dev/null)
+ssh_args=(-F "$SCRIPT_DIR/ssh_config" -i "$SSH_KEY" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$known_hosts" -o GlobalKnownHostsFile=/dev/null)
 [[ -z "$SSH_JUMP" ]] || ssh_args+=(-J "$SSH_JUMP")
 ssh_checked() {
  local error_file code host

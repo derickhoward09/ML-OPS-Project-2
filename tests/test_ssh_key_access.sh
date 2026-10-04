@@ -14,7 +14,7 @@ printf 'bootstrap-key\n' > "$FIXTURE_DIR/remote_authorized_keys"
 cat > "$FIXTURE_DIR/bin/ssh" <<'MOCK_SSH'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-[[ " $* " == *" -F /dev/null "* ]]
+[[ " $* " == *" -F "*"/scripts/ssh_config "* ]]
 [[ " $* " == *" -J ${FAKE_EXPECTED_JUMP:-turing.wpi.edu} "* ]]
 [[ " $* " == *" -p 23001 "* ]]
 [[ " $* " == *" -o CertificateFile=none "* ]]
