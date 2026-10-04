@@ -356,8 +356,7 @@ def ssh_base(values: dict[str, str]) -> list[str]:
     known_hosts.touch(mode=0o600, exist_ok=True)
     os.chmod(known_hosts, 0o600)
     args = ["ssh", "-T", "-i", values["SSH_KEY"], "-p", values["SSH_PORT"], "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "ConnectTimeout=8", "-o", "ConnectionAttempts=1", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2", "-o", "StrictHostKeyChecking=accept-new", "-o", f"UserKnownHostsFile={known_hosts}", "-o", "GlobalKnownHostsFile=/dev/null"]
-    if values.get("SSH_JUMP"):
-        args += ["-J", values["SSH_JUMP"]]
+    args += ["-J", values.get("SSH_JUMP") or "turing.wpi.edu"]
     args.append(host)
     return args
 
@@ -543,6 +542,21 @@ def recover(*, force: bool = False) -> int:
         return 1
 
 
+def prepare_honeypot() -> int:
+    """Restore ResumeLens first; defer Cowrie until app health is confirmed."""
+    if recover() != 0:
+        print("ResumeLens recovery failed; honeypot recovery is deferred.", flush=True)
+        return 1
+    # recover() also returns success when another deployment holds its lock.
+    # Confirm health so that a busy app worker cannot let Cowrie start early.
+    status, _ = inspect_vm(scheduler_values())
+    if status != "healthy":
+        print(f"ResumeLens is {status}; honeypot recovery is deferred.", flush=True)
+        return 1
+    print("ResumeLens is healthy; proceeding with honeypot recovery.", flush=True)
+    return 0
+
+
 def monitor() -> int:
     try:
         values = scheduler_values()
@@ -570,6 +584,7 @@ def main() -> int:
     group.add_argument("--test", action="store_true", help="test integrations without changing cron or deploying")
     group.add_argument("--dry-run", action="store_true", help="preview cron changes without prompts or network calls")
     commands.add_parser("monitor", help="short once-a-minute VM health check")
+    commands.add_parser("prepare-honeypot", help="recover the app before allowing honeypot recovery")
     commands.add_parser("recover", help="locked ResumeLens VM recovery worker")
     commands.add_parser("deploy", help="fetch local-deploy-main and force a locked VM deployment")
     args = parser.parse_args()
@@ -579,6 +594,8 @@ def main() -> int:
             return init(mode)
         if args.command == "monitor":
             return monitor()
+        if args.command == "prepare-honeypot":
+            return prepare_honeypot()
         return recover(force=args.command == "deploy")
     except (RuntimeError, ValueError, OSError, subprocess.CalledProcessError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

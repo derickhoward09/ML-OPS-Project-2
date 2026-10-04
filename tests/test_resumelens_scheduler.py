@@ -195,10 +195,10 @@ def test_source_uses_clean_existing_checkout_when_fetch_is_temporarily_unavailab
     assert "may be behind" in messages[0]
 
 
-def test_direct_ssh_is_default_and_host_key_store_is_isolated(tmp_path, monkeypatch):
+def test_turing_jump_is_default_and_host_key_store_is_isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(scheduler.Path, "home", lambda: tmp_path)
     args = scheduler.ssh_base(valid_values())
-    assert "-J" not in args
+    assert args[args.index("-J") + 1] == "turing.wpi.edu"
     assert "StrictHostKeyChecking=accept-new" in args
     assert f"UserKnownHostsFile={tmp_path}/.local/state/resumelens-recovery/known_hosts" in args
     assert "GlobalKnownHostsFile=/dev/null" in args

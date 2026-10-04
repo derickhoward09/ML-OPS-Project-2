@@ -357,4 +357,10 @@ if ! flock -n 9; then
     fi
     exit 0
 fi
+# App restoration takes priority over Cowrie access and deployment repairs.
+if ! python3 "$REPO_ROOT/scripts/resumelens_scheduler.py" prepare-honeypot; then
+    log "App recovery is pending; deferring honeypot recovery to the next check."
+    exit 1
+fi
+
 recover

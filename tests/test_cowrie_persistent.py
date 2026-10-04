@@ -62,6 +62,7 @@ class PersistentConnectionTests(unittest.TestCase):
         command(
             "python3",
             'if [[ "${1:-}" == - ]]; then cat >/dev/null; exit 0; fi\n'
+            'if [[ "${2:-}" == prepare-honeypot ]]; then exit "${MOCK_APP_RECOVERY_STATUS:-0}"; fi\n'
             'exec "$REAL_PYTHON" "$@"\n',
         )
         command(
@@ -204,6 +205,11 @@ esac
 
     def seen(self):
         return self.events.read_text().splitlines() if self.events.exists() else []
+
+    def test_app_recovery_failure_defers_persistent_restoration(self):
+        result = self.assert_status(1, "--recover", MOCK_APP_RECOVERY_STATUS="1")
+        self.assertIn("deferring honeypot recovery", result.stdout)
+        self.assertEqual(self.seen(), [])
 
     def test_healthy_checks_reuse_one_master_and_block_direct_fallback(self):
         self.assert_status(0, "--initialize")

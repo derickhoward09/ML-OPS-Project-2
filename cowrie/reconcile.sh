@@ -36,6 +36,12 @@ log() {
     printf '%s | %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"
 }
 
+# App restoration takes priority over Cowrie access and deployment repairs.
+if ! python3 "$REPO_ROOT/scripts/resumelens_scheduler.py" prepare-honeypot; then
+    log "App recovery is pending; deferring honeypot recovery to the next check."
+    exit 1
+fi
+
 if [[ "$mode" == --repair-deploy ]]; then
     log "Deployment health check failed; starting repair."
     exec "$SCRIPT_DIR/deploy.sh"
