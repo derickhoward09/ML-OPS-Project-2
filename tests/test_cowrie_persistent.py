@@ -348,7 +348,18 @@ esac
         self.assertIn("MASTER_START", self.seen())
         self.assertNotIn("DIRECT_STUDENT", self.seen())
 
-    def test_twenty_minute_retries_then_thirty_minute_cooldown(self):
+    def test_existing_cooldown_state_allows_retry_in_next_minute(self):
+        self.remote_auth.write_text("")
+        state_dir = self.root / "persistent-state"
+        state_dir.mkdir()
+        start = 1_000_000
+        (state_dir / "retry-state").write_text(f"{start} {start // 60}\n")
+
+        self.assertNotEqual(self.run_persistent("--recover", epoch=start + 25 * 60).returncode, 0)
+        self.assertEqual(self.seen().count("MASTER_START"), 1)
+        self.assertEqual(self.seen().count("DIRECT_STUDENT"), 1)
+
+    def test_retries_continue_without_cooldown_once_per_minute(self):
         self.remote_auth.write_text("")
         start = 1_000_000
         for minute in range(20):
@@ -360,12 +371,12 @@ esac
         self.assertNotEqual(self.run_persistent("--recover", epoch=start + 60 * 19).returncode, 0)
         self.assertEqual(self.seen().count("DIRECT_STUDENT"), first_attempts)
 
-        for minute in (20, 25, 49):
+        for attempt, minute in enumerate((20, 25, 49, 50, 1440), start=1):
             self.assertNotEqual(self.run_persistent("--recover", epoch=start + 60 * minute).returncode, 0)
-            self.assertEqual(self.seen().count("DIRECT_STUDENT"), first_attempts)
-
-        self.assertNotEqual(self.run_persistent("--recover", epoch=start + 60 * 50).returncode, 0)
-        self.assertEqual(self.seen().count("DIRECT_STUDENT"), first_attempts + 1)
+            self.assertEqual(self.seen().count("DIRECT_STUDENT"), first_attempts + attempt)
+            self.assertEqual(self.seen().count("MASTER_START"), first_attempts + attempt)
+            self.assertNotEqual(self.run_persistent("--recover", epoch=start + 60 * minute + 1).returncode, 0)
+            self.assertEqual(self.seen().count("MASTER_START"), first_attempts + attempt)
 
 
 if __name__ == "__main__":

@@ -15,8 +15,6 @@ STUDENT_KEY="$HOME/.ssh/mlops/student-admin_key"
 STATE_DIR="${COWRIE_PERSISTENT_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/cowrie-persistent}"
 CONTROL_PATH="$STATE_DIR/master.sock"
 RETRY_FILE="$STATE_DIR/retry-state"
-RETRY_WINDOW_SECONDS=1200
-RETRY_COOLDOWN_SECONDS=1800
 
 case "${1:-}" in
     --check|--recover|--initialize|--stop|--stop-keep-state) mode="$1" ;;
@@ -155,32 +153,27 @@ clear_retry_state() {
     rm -f -- "$RETRY_FILE"
 }
 
-# One attempt per wall-clock minute for 20 minutes, followed by 30 minutes
-# without fresh SSH authentication. The monitor's 0-20 second jitter spreads
+# One attempt per wall-clock minute until recovery succeeds.
+# The monitor's 0-20 second jitter spreads
 # each permitted attempt within its minute; its heartbeat continues throughout.
 allow_reconnect_attempt() {
-    local now cycle_start=0 last_slot=-1 current_slot retry_tmp
+    local now last_attempt=0 last_slot=-1 current_slot retry_tmp
     now="$(date '+%s')"
     [[ "$now" =~ ^[0-9]+$ ]] || return 1
     current_slot=$((now / 60))
     if [[ -f "$RETRY_FILE" && ! -L "$RETRY_FILE" ]]; then
-        read -r cycle_start last_slot < "$RETRY_FILE" || true
+        # Preserve the two-field format so existing retry state remains usable.
+        read -r last_attempt last_slot < "$RETRY_FILE" || true
     fi
-    if [[ ! "$cycle_start" =~ ^[0-9]+$ || ! "$last_slot" =~ ^-?[0-9]+$ ]] ||
-       (( cycle_start == 0 || now < cycle_start || now - cycle_start >= RETRY_WINDOW_SECONDS + RETRY_COOLDOWN_SECONDS )); then
-        cycle_start="$now"
+    if [[ ! "$last_slot" =~ ^-?[0-9]+$ ]]; then
         last_slot=-1
-    fi
-    if (( now - cycle_start >= RETRY_WINDOW_SECONDS )); then
-        log "Fresh SSH retries are cooling down for 30 minutes; heartbeat continues."
-        return 1
     fi
     if (( last_slot == current_slot )); then
         log "Fresh SSH was already retried this minute."
         return 1
     fi
     retry_tmp="$(mktemp "$STATE_DIR/.retry-state.XXXXXX")" || return 1
-    printf '%s %s\n' "$cycle_start" "$current_slot" > "$retry_tmp"
+    printf '%s %s\n' "$now" "$current_slot" > "$retry_tmp"
     mv -f -- "$retry_tmp" "$RETRY_FILE"
 }
 
