@@ -125,3 +125,9 @@ The 15-minute stall depends on the scanner and gateway keeping the TCP connectio
 - [Cowrie recommended installation](https://docs.cowrie.org/en/stable/INSTALL.html)
 - [Cowrie authentication checker](https://github.com/cowrie/cowrie/blob/v3.0.15/src/cowrie/core/checkers.py)
 - [Healthchecks cron monitoring](https://healthchecks.io/docs/monitoring_cron_jobs/)
+
+## Development VM log retention
+
+On the Ubuntu development VM, install the size-based retention policy with
+`sudo bash scripts/install_log_rotation.sh "$PWD" "$USER"`. See
+[LOG_RETENTION.md](LOG_RETENTION.md) for limits, verification, and backup paths.
